@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from pymongo import MongoClient, ReadPreference
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 import discord
 from discord.ext import commands
@@ -26,94 +26,105 @@ class DatabaseManager:
     def __init__(self):
         self.client = None
         self.db = None
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
-        self.reconnect_delay = 5  # seconds
+        self.connected = False
+        self.last_heartbeat = datetime.utcnow()
+        self.init_connection()
 
-    async def connect(self):
-        """Establish database connection with retry logic"""
-        while self.reconnect_attempts < self.max_reconnect_attempts:
-            try:
-                logger.info(f"Attempting MongoDB connection (attempt {self.reconnect_attempts + 1})")
-                
-                # Initialize MongoDB client with optimized settings for Railway
-                self.client = MongoClient(
-                    MONGODB_URI,
-                    serverSelectionTimeoutMS=30000,
-                    connectTimeoutMS=30000,
-                    socketTimeoutMS=30000,
-                    maxPoolSize=50,
-                    retryWrites=True,
-                    tls=True,
-                    tlsCAFile=certifi.where()
-                )
-                
-                # Test connection
-                self.client.admin.command('ping')
-                
-                # Initialize database and collections
-                self.db = self.client[DB_NAME]
-                
-                # Log successful connection
-                logger.info("✅ Successfully connected to MongoDB!")
-                logger.info(f"Available databases: {self.client.list_database_names()}")
-                logger.info(f"Collections in {DB_NAME}: {self.db.list_collection_names()}")
-                
-                # Reset reconnection attempts on successful connection
-                self.reconnect_attempts = 0
-                return True
-                
-            except (ServerSelectionTimeoutError, ConnectionFailure) as e:
-                self.reconnect_attempts += 1
-                logger.error(f"Connection attempt {self.reconnect_attempts} failed: {str(e)}")
-                
-                if self.reconnect_attempts < self.max_reconnect_attempts:
-                    logger.info(f"Retrying in {self.reconnect_delay} seconds...")
-                    await asyncio.sleep(self.reconnect_delay)
-                else:
-                    logger.error("Max reconnection attempts reached")
-                    raise
-                    
-            except Exception as e:
-                logger.error(f"Unexpected error during connection: {str(e)}")
-                raise
+    def init_connection(self):
+        """Initialize MongoDB connection with optimized settings"""
+        try:
+            logger.info("Initializing MongoDB connection...")
+            
+            # Connection options optimized for Railway
+            connection_options = {
+                'serverSelectionTimeoutMS': 30000,
+                'connectTimeoutMS': 20000,
+                'socketTimeoutMS': 20000,
+                'maxPoolSize': 10,
+                'minPoolSize': 1,
+                'maxIdleTimeMS': 45000,
+                'waitQueueTimeoutMS': 15000,
+                'heartbeatFrequencyMS': 10000,
+                'retryWrites': True,
+                'retryReads': True,
+                'w': 'majority',
+                'readPreference': ReadPreference.PRIMARY_PREFERRED,
+                'tls': True,
+                'tlsCAFile': certifi.where(),
+                'directConnection': False,
+                'appName': 'RailwayDiscordBot'
+            }
+            
+            # Initialize client with optimized settings
+            self.client = MongoClient(MONGODB_URI, **connection_options)
+            
+            # Test connection and initialize database
+            self.client.admin.command('ping')
+            self.db = self.client[DB_NAME]
+            
+            # Initialize collections
+            self.qa_collection = self.db.qa_history
+            
+            self.connected = True
+            logger.info("✅ MongoDB connection initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize MongoDB connection: {str(e)}")
+            self.connected = False
+            raise
 
-    async def ensure_connected(self):
+    async def ensure_connection(self):
         """Ensure database connection is active"""
         try:
-            if not self.client:
-                await self.connect()
+            if not self.connected:
+                self.init_connection()
             else:
                 # Test existing connection
                 self.client.admin.command('ping')
-        except Exception:
-            await self.connect()
+                self.last_heartbeat = datetime.utcnow()
+        except Exception as e:
+            logger.error(f"Connection check failed: {str(e)}")
+            self.connected = False
+            self.init_connection()
+
+    async def perform_operation(self, operation):
+        """Wrapper for database operations with connection check"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                await self.ensure_connection()
+                return await operation()
+            except (ServerSelectionTimeoutError, ConnectionFailure) as e:
+                retry_count += 1
+                logger.warning(f"Operation failed (attempt {retry_count}): {str(e)}")
+                if retry_count < max_retries:
+                    await asyncio.sleep(2 ** retry_count)  # Exponential backoff
+                else:
+                    raise
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                raise
 
     async def test_connection(self):
-        """Test database connection with retry logic"""
-        try:
-            await self.ensure_connected()
-            
-            # Test write operation
-            test_collection = self.db.test
-            result = test_collection.insert_one({
+        """Test database connection"""
+        async def _test():
+            collections = self.db.list_collection_names()
+            test_doc = {
                 "test": True,
                 "timestamp": datetime.utcnow()
-            })
-            
-            # Clean up test document
-            test_collection.delete_one({"_id": result.inserted_id})
-            
-            collections = self.db.list_collection_names()
+            }
+            result = self.db.connection_tests.insert_one(test_doc)
+            self.db.connection_tests.delete_one({"_id": result.inserted_id})
             return True, {
                 'status': 'Connected',
                 'database': DB_NAME,
-                'collections': collections
+                'collections': collections,
+                'last_heartbeat': self.last_heartbeat
             }
-            
-        except Exception as e:
-            logger.error(f"Connection test failed: {str(e)}")
-            return False, str(e)
+        
+        return await self.perform_operation(_test)
 
 class QABot(commands.Bot):
     def __init__(self):
@@ -124,19 +135,30 @@ class QABot(commands.Bot):
 
     async def setup_hook(self):
         try:
-            logger.info("Initializing bot...")
-            await self.db.connect()
             await self.tree.sync()
-            logger.info("Bot setup complete!")
+            logger.info("Bot commands synced!")
         except Exception as e:
-            logger.error(f"Bot setup failed: {str(e)}")
+            logger.error(f"Failed to sync commands: {str(e)}")
             raise
+
+# Connection health check task
+async def monitor_connection(db_manager: DatabaseManager):
+    while True:
+        try:
+            await db_manager.ensure_connection()
+            logger.debug("Connection health check passed")
+            await asyncio.sleep(30)  # Check every 30 seconds
+        except Exception as e:
+            logger.error(f"Connection monitor error: {str(e)}")
+            await asyncio.sleep(5)
 
 bot = QABot()
 
 @bot.event
 async def on_ready():
     logger.info(f'Bot is ready! Logged in as {bot.user}')
+    # Start connection monitor
+    bot.loop.create_task(monitor_connection(bot.db))
     for guild in bot.guilds:
         logger.info(f'Connected to guild: {guild.name} (id: {guild.id})')
 
@@ -150,27 +172,13 @@ async def ping(interaction: discord.Interaction):
                 f"✅ Bot and database are working!\n"
                 f"Connected to: {interaction.guild.name}\n"
                 f"Database: {result['database']}\n"
-                f"Collections: {', '.join(result['collections'])}"
+                f"Collections: {', '.join(result['collections'])}\n"
+                f"Last Heartbeat: {result['last_heartbeat'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
             )
         else:
             await interaction.followup.send(f"⚠️ Bot is working but database connection failed: {result}")
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)}")
-
-# Periodic connection check
-async def check_connection():
-    while True:
-        try:
-            await bot.db.ensure_connected()
-            await asyncio.sleep(60)  # Check every minute
-        except Exception as e:
-            logger.error(f"Connection check failed: {str(e)}")
-            await asyncio.sleep(5)
-
-@bot.event
-async def on_connect():
-    # Start connection checker
-    bot.loop.create_task(check_connection())
 
 if __name__ == "__main__":
     logger.info("Starting bot...")
