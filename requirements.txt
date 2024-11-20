@@ -4,3 +4,4 @@ openai
 pymongo[srv]
 langchain-openai
 certifi
+dnspython
