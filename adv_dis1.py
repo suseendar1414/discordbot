@@ -38,7 +38,7 @@ class DatabaseManager:
         )
         try:
             self.client.admin.command('ping')
-            logger.info("MongoDB connection successful")
+            logger.info("MongoDB connection successful.")
         except Exception as e:
             logger.error(f"MongoDB connection failed: {e}")
             raise
