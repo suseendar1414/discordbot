@@ -147,12 +147,16 @@ async def on_ready():
 @bot.tree.command(name="ping", description="Test if the bot is working")
 async def ping(interaction: discord.Interaction):
     try:
+        await interaction.response.defer()  # Defer the response
         bot.db.client.admin.command('ping')
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Bot and Database are working!\nServer: {interaction.guild.name}"
         )
     except Exception as e:
-        await interaction.response.send_message(f"Error: {str(e)}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"Error: {str(e)}")
+        else:
+            await interaction.followup.send(f"Error: {str(e)}")
 
 @bot.tree.command(name="ask", description="Ask about Quantified Ante trading concepts")
 @app_commands.describe(question="Your question about trading")
