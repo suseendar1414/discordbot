@@ -1,0 +1,13 @@
+[
+build
+]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[
+deploy
+]
+startCommand = "python adv_discord_bot.py"
+healthcheckPath = "/"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
