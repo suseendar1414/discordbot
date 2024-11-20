@@ -6,7 +6,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from datetime import datetime
-import certifi
 import ssl
 
 # Setup logging
@@ -20,32 +19,17 @@ logger = logging.getLogger('discord_bot')
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MONGODB_URI = os.getenv('MONGODB_URI')
+DB_NAME = 'quantified_ante'  # Specify database name explicitly
 
 class DatabaseManager:
     def __init__(self):
         try:
-            # Create an SSL context
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE  # For testing only
-            
-            # Parse connection string
-            if 'mongodb+srv://' in MONGODB_URI:
-                # Convert srv URI to standard URI
-                db_uri = MONGODB_URI.replace(
-                    'mongodb+srv://',
-                    'mongodb://'
-                ).split('?')[0]
-                db_uri += '/?ssl=true&replicaSet=atlas-xxxx&authSource=admin'
-            else:
-                db_uri = MONGODB_URI
-
             logger.info("Attempting MongoDB connection...")
             
+            # Create MongoDB client
             self.client = MongoClient(
-                db_uri,
+                MONGODB_URI,
                 ssl=True,
-                ssl_cert_reqs=ssl.CERT_NONE,  # For testing only
                 connectTimeoutMS=30000,
                 serverSelectionTimeoutMS=30000
             )
@@ -54,8 +38,11 @@ class DatabaseManager:
             self.client.admin.command('ping')
             logger.info("Successfully connected to MongoDB")
             
-            self.db = self.client.get_database()
-            self.qa_collection = self.db.qa_history
+            # Explicitly specify database and collection
+            self.db = self.client[DB_NAME]
+            self.qa_collection = self.db['qa_history']
+            
+            logger.info(f"Connected to database: {DB_NAME}")
             
         except Exception as e:
             logger.error(f"MongoDB connection failed: {e}")
@@ -117,8 +104,11 @@ async def dbtest(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         if bot.db and bot.db.client:
-            bot.db.client.admin.command('ping')
-            await interaction.followup.send("✅ Database connection successful!")
+            # Test the database connection
+            collections = bot.db.db.list_collection_names()
+            await interaction.followup.send(
+                f"✅ Database connection successful!\nCollections: {', '.join(collections)}"
+            )
         else:
             await interaction.followup.send("❌ Database not initialized!")
     except Exception as e:
