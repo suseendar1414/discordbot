@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
 from typing import List, Dict, Any
+import ssl
 
 # Setup logging
 logging.basicConfig(
@@ -24,15 +25,21 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
+def get_database_connection():
+    client = MongoClient(
+        MONGODB_URI,
+        tls=True,
+        tlsCAFile=certifi.where(),
+        tlsAllowInvalidCertificates=True,  # Only for testing, remove in production
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        ssl_cert_reqs=ssl.CERT_NONE  # Only for testing, remove in production
+    )
+    return client
+
 class DatabaseManager:
     def __init__(self, uri: str):
-        self.client = MongoClient(
-            uri,
-            tls=True,
-            tlsCAFile=certifi.where(),
-            serverSelectionTimeoutMS=5000,
-            connectTimeoutMS=5000
-        )
+        self.client = get_database_connection()
         self.db = self.client['quantified_ante']
         self.docs_collection = self.db['documents']
         self.qa_collection = self.db['qa_history']
