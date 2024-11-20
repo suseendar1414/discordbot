@@ -7,10 +7,10 @@ from discord.ext import commands
 from discord import app_commands
 from datetime import datetime
 
-# Setup logging
+# Enhanced logging setup
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG,  # Changed to DEBUG for more detailed logs
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 logger = logging.getLogger('discord_bot')
 
@@ -24,29 +24,65 @@ class DatabaseManager:
     def __init__(self):
         try:
             logger.info("Attempting MongoDB connection...")
+            logger.debug(f"Using database name: {DB_NAME}")
             
-            # Simplified connection
-            self.client = MongoClient(MONGODB_URI)
+            # Validate MongoDB URI
+            if not MONGODB_URI:
+                raise ValueError("MONGODB_URI environment variable is not set")
+            
+            # Add connection timeout and logging
+            self.client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,  # 5 second timeout
+                connectTimeoutMS=5000
+            )
+            
+            # Test connection before proceeding
+            self.client.server_info()  # This will raise an exception if connection fails
             
             # Select database and collection
             self.db = self.client[DB_NAME]
             self.qa_collection = self.db.qa_history
             
-            # Test connection
-            self.db.command('ping')
+            # Verify collection access
+            collections = self.db.list_collection_names()
+            logger.info(f"Available collections: {collections}")
+            
             logger.info(f"Successfully connected to MongoDB database: {DB_NAME}")
             
         except Exception as e:
-            logger.error(f"MongoDB connection failed: {e}")
+            logger.error(f"MongoDB connection failed: {str(e)}")
+            # Print the full MongoDB URI (with credentials masked)
+            masked_uri = self.mask_mongodb_uri(MONGODB_URI) if MONGODB_URI else "None"
+            logger.debug(f"Attempted connection with URI: {masked_uri}")
             raise
+
+    def mask_mongodb_uri(self, uri):
+        """Masks sensitive information in MongoDB URI for logging."""
+        if not uri:
+            return None
+        try:
+            # Simple masking - you might want to improve this
+            return uri.replace('//', '//***:***@') if '@' in uri else uri
+        except:
+            return "Invalid URI format"
 
     async def test_connection(self):
         try:
-            self.db.command('ping')
+            # More comprehensive connection test
+            server_info = self.client.server_info()
             collections = self.db.list_collection_names()
-            return True, collections
+            
+            connection_details = {
+                "server_version": server_info.get("version", "unknown"),
+                "collections": collections,
+                "database": DB_NAME
+            }
+            
+            return True, connection_details
+            
         except Exception as e:
-            logger.error(f"Database test failed: {e}")
+            logger.error(f"Database test failed: {str(e)}")
             return False, str(e)
 
 class QABot(commands.Bot):
@@ -62,7 +98,7 @@ class QABot(commands.Bot):
             await self.tree.sync()
             logger.info("Commands synced globally!")
         except Exception as e:
-            logger.error(f"Setup failed: {e}")
+            logger.error(f"Setup failed: {str(e)}")
             raise
 
 bot = QABot()
@@ -82,7 +118,9 @@ async def ping(interaction: discord.Interaction):
             await interaction.followup.send(
                 f"✅ Bot and database are working!\n"
                 f"Connected to: {interaction.guild.name}\n"
-                f"Available collections: {', '.join(result)}"
+                f"MongoDB Version: {result['server_version']}\n"
+                f"Database: {result['database']}\n"
+                f"Available collections: {', '.join(result['collections'])}"
             )
         else:
             await interaction.followup.send(f"⚠️ Bot is working but database connection failed: {result}")
