@@ -23,28 +23,28 @@ DB_NAME = 'quantified_ante'
 class DatabaseManager:
     def __init__(self):
         try:
-            logger.info("Attempting MongoDB connection...")
-            logger.debug(f"Using database name: {DB_NAME}")
+            logger.info("Attempting MongoDB Atlas connection...")
             
-            # Validate MongoDB URI
             if not MONGODB_URI:
                 raise ValueError("MONGODB_URI environment variable is not set")
             
-            # Add connection timeout and logging
+            # Modified MongoDB connection with SSL settings
             self.client = MongoClient(
                 MONGODB_URI,
-                serverSelectionTimeoutMS=5000,  # 5 second timeout
-                connectTimeoutMS=5000
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+                ssl=True,
+                ssl_cert_reqs='CERT_REQUIRED',
+                tlsAllowInvalidCertificates=False,
+                tlsCAFile=certifi.where()
             )
             
             # Test connection before proceeding
-            self.client.server_info()  # This will raise an exception if connection fails
+            self.client.server_info()
             
-            # Select database and collection
             self.db = self.client[DB_NAME]
             self.qa_collection = self.db.qa_history
             
-            # Verify collection access
             collections = self.db.list_collection_names()
             logger.info(f"Available collections: {collections}")
             
@@ -52,10 +52,8 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"MongoDB connection failed: {str(e)}")
-            # Print the full MongoDB URI (with credentials masked)
-            masked_uri = self.mask_mongodb_uri(MONGODB_URI) if MONGODB_URI else "None"
-            logger.debug(f"Attempted connection with URI: {masked_uri}")
             raise
+
 
     def mask_mongodb_uri(self, uri):
         """Masks sensitive information in MongoDB URI for logging."""
