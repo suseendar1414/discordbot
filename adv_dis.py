@@ -6,9 +6,10 @@ from discord import app_commands
 from openai import OpenAI
 from pymongo import MongoClient
 import certifi
+import ssl
 from datetime import datetime
 
-# Enhanced logging
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -21,24 +22,29 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
-# Initialize clients with error checking
+# Initialize MongoDB with proper SSL config
 try:
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    mongo_client = MongoClient(MONGODB_URI, tls=True, tlsCAFile=certifi.where())
+    mongo_client = MongoClient(
+        MONGODB_URI,
+        tls=True,
+        tlsCAFile=certifi.where(),
+        serverSelectionTimeoutMS=5000,
+        ssl_cert_reqs=ssl.CERT_NONE  # Added this line
+    )
+    
+    # Test connection
+    mongo_client.admin.command('ping')
+    logger.info("MongoDB connected successfully!")
+    
     db = mongo_client['quantified_ante']
     docs_collection = db['documents']
     qa_collection = db['qa_history']
     
-    # Test MongoDB connection
-    mongo_client.admin.command('ping')
-    logger.info("MongoDB connected successfully!")
-    
-    # Check if documents exist
-    doc_count = docs_collection.count_documents({})
-    logger.info(f"Found {doc_count} documents in collection")
+    # Initialize OpenAI
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
     
 except Exception as e:
-    logger.error(f"Initialization error: {e}")
+    logger.error(f"Failed to initialize MongoDB: {e}")
     raise
 
 class QABot(discord.Client):
@@ -66,12 +72,28 @@ def search_documents(query: str):
     """Search documents with error logging"""
     try:
         logger.info(f"Searching for: {query}")
-        results = list(docs_collection.find(
+        # Simple text search first
+        text_results = list(docs_collection.find(
             {"text": {"$regex": f"(?i){query}"}},
             {"text": 1, "_id": 0}
         ).limit(3))
-        logger.info(f"Found {len(results)} matching documents")
-        return results
+        
+        if text_results:
+            logger.info(f"Found {len(text_results)} text matches")
+            return text_results
+            
+        # If no exact matches, try word-by-word search
+        words = query.split()
+        word_queries = [{"text": {"$regex": f"(?i){word}"}} for word in words]
+        if word_queries:
+            results = list(docs_collection.find(
+                {"$or": word_queries},
+                {"text": 1, "_id": 0}
+            ).limit(3))
+            logger.info(f"Found {len(results)} partial matches")
+            return results
+            
+        return []
     except Exception as e:
         logger.error(f"Search error: {e}")
         return []
@@ -83,18 +105,22 @@ async def ping(interaction: discord.Interaction):
 @client.tree.command(name="test", description="Test database connection")
 async def test(interaction: discord.Interaction):
     try:
-        # Test MongoDB
+        # Test MongoDB connection
         mongo_client.admin.command('ping')
         doc_count = docs_collection.count_documents({})
         sample = docs_collection.find_one()
         
+        # Get sample content
+        sample_text = sample['text'][:200] + "..." if sample else "No content"
+        
         response = f"""Database Status:
 Connected: ✅
-Documents: {doc_count}
-Sample: {sample['text'][:100] if sample else 'No documents'}"""
+Total Documents: {doc_count}
+Sample Content: {sample_text}"""
         
         await interaction.response.send_message(response)
     except Exception as e:
+        logger.error(f"Database test error: {e}")
         await interaction.response.send_message(f"Database error: {str(e)}")
 
 @client.tree.command(name="ask", description="Ask about Quantified Ante trading")
@@ -108,7 +134,6 @@ async def ask(interaction: discord.Interaction, question: str):
         results = search_documents(question)
         
         if not results:
-            logger.info("No relevant documents found")
             await interaction.followup.send(
                 "I couldn't find information about that topic. Try asking about MMBM, Order Blocks, or Market Structure."
             )
@@ -116,10 +141,8 @@ async def ask(interaction: discord.Interaction, question: str):
         
         # Prepare context
         context = "\n".join(doc["text"] for doc in results)
-        logger.info(f"Context length: {len(context)} characters")
         
         # Get OpenAI response
-        logger.info("Requesting OpenAI response")
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -136,7 +159,6 @@ async def ask(interaction: discord.Interaction, question: str):
         )
         
         answer = response.choices[0].message.content
-        logger.info(f"Generated response length: {len(answer)} characters")
         
         # Store Q&A
         qa_collection.insert_one({
