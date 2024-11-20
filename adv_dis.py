@@ -45,5 +45,5 @@ async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f'Pong! ({round(client.latency * 1000)}ms)')
 
 if __name__ == "__main__":
-    logger.info("Starting bot...")
+    logger.info("Starting bot....")
     client.run(DISCORD_TOKEN)
