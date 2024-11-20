@@ -2,11 +2,12 @@ import os
 import logging
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from discord.ext import commands
 import discord
+from discord.ext import commands
 from discord import app_commands
 from datetime import datetime
 import certifi
+import ssl
 
 # Setup logging
 logging.basicConfig(
@@ -20,20 +21,35 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
-if not MONGODB_URI:
-    raise ValueError("MONGODB_URI environment variable not set")
-
-logger.info("Attempting to connect to MongoDB...")
-
 class DatabaseManager:
     def __init__(self):
-        # Initialize with basic settings
         try:
+            # Create an SSL context
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE  # For testing only
+            
+            # Parse connection string
+            if 'mongodb+srv://' in MONGODB_URI:
+                # Convert srv URI to standard URI
+                db_uri = MONGODB_URI.replace(
+                    'mongodb+srv://',
+                    'mongodb://'
+                ).split('?')[0]
+                db_uri += '/?ssl=true&replicaSet=atlas-xxxx&authSource=admin'
+            else:
+                db_uri = MONGODB_URI
+
+            logger.info("Attempting MongoDB connection...")
+            
             self.client = MongoClient(
-                MONGODB_URI,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=5000
+                db_uri,
+                ssl=True,
+                ssl_cert_reqs=ssl.CERT_NONE,  # For testing only
+                connectTimeoutMS=30000,
+                serverSelectionTimeoutMS=30000
             )
+            
             # Test connection
             self.client.admin.command('ping')
             logger.info("Successfully connected to MongoDB")
@@ -42,7 +58,7 @@ class DatabaseManager:
             self.qa_collection = self.db.qa_history
             
         except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
+            logger.error(f"MongoDB connection failed: {e}")
             raise
 
     def store_qa(self, interaction, question, answer, success):
@@ -67,7 +83,7 @@ class QABot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
-        self.db = None  # Initialize later
+        self.db = None
 
     async def setup_hook(self):
         try:
