@@ -28,10 +28,20 @@ class DatabaseManager:
         self.client = MongoClient(
             uri,
             tls=True,
-            tlsCAFile=certifi.where(),
-            serverSelectionTimeoutMS=10000,
-            connectTimeoutMS=10000
+            tlsAllowInvalidCertificates=True,  # Warning: Only for debugging
+            connectTimeoutMS=30000,
+            serverSelectionTimeoutMS=30000,
+            retryWrites=True,
+            w="majority"
         )
+        try:
+            # Test connection immediately
+            self.client.admin.command('ping')
+            logger.info("MongoDB connection successful")
+        except Exception as e:
+            logger.error(f"MongoDB connection failed: {e}")
+            raise
+            
         self.db = self.client['quantified_ante']
         self.docs_collection = self.db['documents']
         self.qa_collection = self.db['qa_history']
