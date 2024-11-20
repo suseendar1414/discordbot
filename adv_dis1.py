@@ -9,8 +9,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
-from typing import List, Dict, Any
-import ssl
 
 # Setup logging
 logging.basicConfig(
@@ -25,26 +23,20 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
-def get_database_connection():
-    client = MongoClient(
-        MONGODB_URI,
-        tls=True,
-        tlsCAFile=certifi.where(),
-        tlsAllowInvalidCertificates=True,  # Only for testing, remove in production
-        serverSelectionTimeoutMS=10000,
-        connectTimeoutMS=10000,
-        ssl_cert_reqs=ssl.CERT_NONE  # Only for testing, remove in production
-    )
-    return client
-
 class DatabaseManager:
     def __init__(self, uri: str):
-        self.client = get_database_connection()
+        self.client = MongoClient(
+            uri,
+            tls=True,
+            tlsCAFile=certifi.where(),
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000
+        )
         self.db = self.client['quantified_ante']
         self.docs_collection = self.db['documents']
         self.qa_collection = self.db['qa_history']
-        
-    def search_documents(self, query: str, k: int = 5) -> List[Dict[Any, Any]]:
+
+    def search_documents(self, query: str, k: int = 5):
         search_terms = [
             query.lower(),
             *query.lower().split(),
@@ -62,8 +54,7 @@ class DatabaseManager:
         logger.info(f"Found {len(results)} text matches")
         return results
 
-    def store_qa(self, interaction: discord.Interaction, question: str, 
-                 answer: str, success: bool) -> None:
+    def store_qa(self, interaction: discord.Interaction, question: str, answer: str, success: bool):
         self.qa_collection.insert_one({
             'timestamp': datetime.utcnow(),
             'guild_id': str(interaction.guild.id),
@@ -75,7 +66,7 @@ class DatabaseManager:
             'success': success
         })
 
-    def get_stats(self, guild_id: str) -> Dict[str, Any]:
+    def get_stats(self, guild_id: str):
         total = self.qa_collection.count_documents({'guild_id': str(guild_id)})
         successful = self.qa_collection.count_documents({
             'guild_id': str(guild_id),
@@ -107,7 +98,7 @@ class QABot(commands.Bot):
         await self.tree.sync()
         logger.info("Commands synced globally!")
 
-    async def process_question(self, question: str) -> str:
+    async def process_question(self, question: str):
         similar_chunks = self.db.search_documents(question)
         
         if not similar_chunks:
@@ -116,9 +107,7 @@ class QABot(commands.Bot):
         context = "\n".join(doc['text'] for doc in similar_chunks)
         
         prompt = f"""You are a knowledgeable Quantified Ante trading assistant. 
-        Answer the question based on the following context. Be specific and cite concepts 
-        from the context. If something isn't explicitly mentioned in the context, 
-        don't make assumptions.
+        Answer the question based on the following context.
 
         Context: {context}
         Question: {question}
@@ -130,7 +119,7 @@ class QABot(commands.Bot):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a knowledgeable Quantified Ante trading assistant. Only use information explicitly stated in the provided context."
+                    "content": "You are a knowledgeable Quantified Ante trading assistant."
                 },
                 {
                     "role": "user",
@@ -154,7 +143,7 @@ async def on_ready():
 @bot.tree.command(name="ping", description="Test if the bot is working")
 async def ping(interaction: discord.Interaction):
     try:
-        await interaction.response.defer()  # Defer the response
+        await interaction.response.defer()
         bot.db.client.admin.command('ping')
         await interaction.followup.send(
             f"✅ Bot and Database are working!\nServer: {interaction.guild.name}"
@@ -198,6 +187,7 @@ async def ask(interaction: discord.Interaction, question: str):
 @bot.tree.command(name="stats", description="Get Q&A statistics for this server")
 async def stats(interaction: discord.Interaction):
     try:
+        await interaction.response.defer()
         stats = bot.db.get_stats(str(interaction.guild.id))
         
         stats_msg = f"""📊 Stats for {interaction.guild.name}:
@@ -212,9 +202,12 @@ Recent Questions:"""
             timestamp = qa["timestamp"].strftime("%Y-%m-%d %H:%M")
             stats_msg += f"\n{status} [{timestamp}] {qa['username']}: {qa['question']}"
         
-        await interaction.response.send_message(stats_msg)
+        await interaction.followup.send(stats_msg)
     except Exception as e:
-        await interaction.response.send_message(f"Error getting stats: {str(e)}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"Error: {str(e)}")
+        else:
+            await interaction.followup.send(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     logger.info("Starting bot...")
