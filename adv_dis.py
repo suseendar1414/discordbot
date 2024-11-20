@@ -4,9 +4,6 @@ from discord import app_commands
 import logging
 from dotenv import load_dotenv
 from openai import OpenAI
-from pymongo import MongoClient
-import certifi
-from datetime import datetime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -16,24 +13,22 @@ logger = logging.getLogger('discord_bot')
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-MONGODB_URI = os.getenv('MONGODB_URI')
 GUILD_ID = 1307930198817116221
 
 # Initialize OpenAI
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Initialize MongoDB
-try:
-    mongo_client = MongoClient(
-        MONGODB_URI,
-        tlsCAFile=certifi.where(),
-        serverSelectionTimeoutMS=5000
-    )
-    db = mongo_client['quantified_ante']
-    docs_collection = db['documents']
-    qa_collection = db['qa_history']
-except Exception as e:
-    logger.error(f"MongoDB initialization error: {e}")
+# Sample trading content (temporary replacement for MongoDB)
+TRADING_CONTENT = """
+MMBM (Market Maker Buy Model) is when we see bullish price action and MMSM is Bearish order flow.
+Market Maker Buy Model (MMBM) indicates a bullish market structure where smart money narrative suggests price is moving to attract buy-side interest from institutional traders.
+In an MMBM, we see bullish price action (PA) as the market seeks to push higher. It typically follows a pattern where liquidity is sought out below key lows before a sustained move to the upside occurs.
+
+Order Blocks represent areas where institutional traders place significant orders, creating a base for price reversals or continuations.
+Order blocks are crucial for spotting where institutional activity has occurred, thus setting up potential trading opportunities.
+
+The Silver Bullet Strategy is a specific trading approach based on Smart Money Concepts (SMC). It leverages the principles used by institutional traders to understand market movements and make informed trading decisions.
+"""
 
 class QABot(discord.Client):
     def __init__(self):
@@ -61,54 +56,19 @@ async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!")
 
 @client.tree.command(name="echo")
-@app_commands.describe(text="The text to repeat")
-async def echo(interaction: discord.Interaction, text: str):
-    await interaction.response.send_message(f"You said: {text}")
-
-@client.tree.command(name="dbtest")
-async def dbtest(interaction: discord.Interaction):
-    """Test database connection"""
-    await interaction.response.defer()
-    
-    try:
-        # Test MongoDB connection
-        mongo_client.admin.command('ping')
-        doc_count = docs_collection.count_documents({})
-        sample = docs_collection.find_one()
-        
-        response = f"""Database Status:
-Connected: ✅
-Documents: {doc_count}
-Sample: {sample['text'][:200] if sample else 'No documents'} ..."""
-        
-        await interaction.followup.send(response)
-    except Exception as e:
-        await interaction.followup.send(f"Database error: {str(e)}")
+@app_commands.describe(message="The message to repeat")
+async def echo(interaction: discord.Interaction, message: str):
+    await interaction.response.send_message(f"You said: {message}")
 
 @client.tree.command(name="ask")
 @app_commands.describe(question="Your question about trading")
 async def ask(interaction: discord.Interaction, question: str):
-    """Answer questions about trading"""
+    """Answer questions about trading using local content"""
     logger.info(f"Question received: {question}")
     await interaction.response.defer()
     
     try:
-        # Search in MongoDB
-        results = list(docs_collection.find(
-            {"text": {"$regex": question, "$options": "i"}},
-            {"text": 1, "_id": 0}
-        ).limit(3))
-        
-        if not results:
-            await interaction.followup.send(
-                "I couldn't find information about that. Try asking about MMBM, Order Blocks, or Market Structure."
-            )
-            return
-        
-        # Prepare context
-        context = "\n".join(doc["text"] for doc in results)
-        
-        # Get OpenAI response
+        # Use OpenAI to generate response based on local content
         response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -118,22 +78,12 @@ async def ask(interaction: discord.Interaction, question: str):
                 },
                 {
                     "role": "user",
-                    "content": f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+                    "content": f"Context: {TRADING_CONTENT}\n\nQuestion: {question}\n\nAnswer based only on the information provided in the context:"
                 }
             ]
         )
         
         answer = response.choices[0].message.content
-        
-        # Store Q&A
-        qa_collection.insert_one({
-            "timestamp": datetime.utcnow(),
-            "user_id": str(interaction.user.id),
-            "username": interaction.user.name,
-            "question": question,
-            "answer": answer,
-            "success": True
-        })
         
         # Send response
         if len(answer) > 1900:
@@ -149,6 +99,22 @@ async def ask(interaction: discord.Interaction, question: str):
         await interaction.followup.send(
             "An error occurred while processing your question. Please try again."
         )
+
+@client.tree.command(name="help")
+async def help(interaction: discord.Interaction):
+    """Show available commands"""
+    help_text = """
+Available Commands:
+• /hello - Get a greeting
+• /ping - Test bot response
+• /echo message:"text" - Repeat a message
+• /ask question:"text" - Ask about trading
+• /help - Show this help message
+
+Example:
+/ask question:"What is MMBM?"
+"""
+    await interaction.response.send_message(help_text)
 
 @client.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
