@@ -25,17 +25,18 @@ MONGODB_URI = os.getenv('MONGODB_URI')
 
 class DatabaseManager:
     def __init__(self, uri: str):
+        # Remove srv from URI if present
+        uri = uri.replace('mongodb+srv://', 'mongodb://')
+        
         self.client = MongoClient(
             uri,
             tls=True,
-            tlsAllowInvalidCertificates=True,  # Warning: Only for debugging
-            connectTimeoutMS=30000,
-            serverSelectionTimeoutMS=30000,
+            tlsInsecure=True,  # For testing only
+            directConnection=True,
             retryWrites=True,
-            w="majority"
+            w='majority'
         )
         try:
-            # Test connection immediately
             self.client.admin.command('ping')
             logger.info("MongoDB connection successful")
         except Exception as e:
