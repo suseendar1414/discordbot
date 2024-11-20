@@ -6,7 +6,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from datetime import datetime
-import ssl
 
 # Setup logging
 logging.basicConfig(
@@ -19,51 +18,36 @@ logger = logging.getLogger('discord_bot')
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 MONGODB_URI = os.getenv('MONGODB_URI')
-DB_NAME = 'quantified_ante'  # Specify database name explicitly
+DB_NAME = 'quantified_ante'
 
 class DatabaseManager:
     def __init__(self):
         try:
             logger.info("Attempting MongoDB connection...")
             
-            # Create MongoDB client
-            self.client = MongoClient(
-                MONGODB_URI,
-                ssl=True,
-                connectTimeoutMS=30000,
-                serverSelectionTimeoutMS=30000
-            )
+            # Simplified connection
+            self.client = MongoClient(MONGODB_URI)
+            
+            # Select database and collection
+            self.db = self.client[DB_NAME]
+            self.qa_collection = self.db.qa_history
             
             # Test connection
-            self.client.admin.command('ping')
-            logger.info("Successfully connected to MongoDB")
-            
-            # Explicitly specify database and collection
-            self.db = self.client[DB_NAME]
-            self.qa_collection = self.db['qa_history']
-            
-            logger.info(f"Connected to database: {DB_NAME}")
+            self.db.command('ping')
+            logger.info(f"Successfully connected to MongoDB database: {DB_NAME}")
             
         except Exception as e:
             logger.error(f"MongoDB connection failed: {e}")
             raise
 
-    def store_qa(self, interaction, question, answer, success):
+    async def test_connection(self):
         try:
-            result = self.qa_collection.insert_one({
-                'timestamp': datetime.utcnow(),
-                'guild_id': str(interaction.guild.id),
-                'guild_name': interaction.guild.name,
-                'user_id': str(interaction.user.id),
-                'username': interaction.user.name,
-                'question': question,
-                'answer': answer,
-                'success': success
-            })
-            return result.inserted_id
+            self.db.command('ping')
+            collections = self.db.list_collection_names()
+            return True, collections
         except Exception as e:
-            logger.error(f"Failed to store Q&A: {e}")
-            raise
+            logger.error(f"Database test failed: {e}")
+            return False, str(e)
 
 class QABot(commands.Bot):
     def __init__(self):
@@ -91,29 +75,19 @@ async def on_ready():
 
 @bot.tree.command(name="ping", description="Test if the bot is working")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer()
     try:
-        # Basic ping test
-        await interaction.followup.send("🏓 Pong! Bot is working!")
-    except Exception as e:
-        logger.error(f"Ping command failed: {e}")
-        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-
-@bot.tree.command(name="dbtest", description="Test database connection")
-async def dbtest(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        if bot.db and bot.db.client:
-            # Test the database connection
-            collections = bot.db.db.list_collection_names()
+        success, result = await bot.db.test_connection()
+        if success:
             await interaction.followup.send(
-                f"✅ Database connection successful!\nCollections: {', '.join(collections)}"
+                f"✅ Bot and database are working!\n"
+                f"Connected to: {interaction.guild.name}\n"
+                f"Available collections: {', '.join(result)}"
             )
         else:
-            await interaction.followup.send("❌ Database not initialized!")
+            await interaction.followup.send(f"⚠️ Bot is working but database connection failed: {result}")
     except Exception as e:
-        logger.error(f"Database test failed: {e}")
-        await interaction.followup.send(f"Database connection failed: {str(e)}")
+        await interaction.followup.send(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     logger.info("Starting bot...")
