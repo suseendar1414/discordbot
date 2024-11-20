@@ -6,7 +6,6 @@ from discord import app_commands
 from openai import OpenAI
 from pymongo import MongoClient
 import certifi
-import ssl
 from datetime import datetime
 
 # Setup logging
@@ -22,14 +21,15 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
-# Initialize MongoDB with proper SSL config
+# Initialize MongoDB with correct settings
 try:
     mongo_client = MongoClient(
         MONGODB_URI,
-        tls=True,
         tlsCAFile=certifi.where(),
         serverSelectionTimeoutMS=5000,
-        ssl_cert_reqs=ssl.CERT_NONE  # Added this line
+        connectTimeoutMS=5000,
+        retryWrites=True,
+        tls=True
     )
     
     # Test connection
@@ -39,6 +39,10 @@ try:
     db = mongo_client['quantified_ante']
     docs_collection = db['documents']
     qa_collection = db['qa_history']
+    
+    # Count documents
+    doc_count = docs_collection.count_documents({})
+    logger.info(f"Found {doc_count} documents in collection")
     
     # Initialize OpenAI
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
