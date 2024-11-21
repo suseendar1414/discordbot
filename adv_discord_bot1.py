@@ -66,40 +66,44 @@ class QABot(commands.Bot):
 
 bot = QABot()
 
-def search_similar_chunks(self, query, k=3):
-    """Search for similar chunks using vector similarity"""
+def search_similar_chunks(query, k=5):
+    """Search for similar chunks using multiple search strategies"""
     try:
-        # Log the search attempt
-        logger.info(f"Starting search for query: {query}")
+        logger.info(f"Starting search for query: '{query}'")
         
-        # First try exact text search
-        logger.info("Attempting exact text search...")
-        text_query = {"$text": {"$search": query}}
-        results = list(self.docs_collection.find(text_query).limit(k))
+        # 1. Prepare search terms for better matching
+        search_terms = [
+            query.lower(),  # Full query
+            *[term.strip() for term in query.lower().split() if term.strip()],  # Individual words
+            # Word pairs for better context matching
+            *[f"{a} {b}".strip() for a, b in zip(query.lower().split(), query.lower().split()[1:]) if a.strip() and b.strip()]
+        ]
+        logger.info(f"Search terms: {search_terms}")
         
+        results = []
+        
+        # 2. Try exact text search first
         if not results:
-            logger.info("No exact matches, trying regex search...")
-            # Try regex search if exact search fails
-            regex_query = {"text": {"$regex": f"(?i){query}"}}
-            results = list(self.docs_collection.find(regex_query).limit(k))
+            text_query = {
+                "$or": [
+                    {"text": {"$regex": f"(?i){term}"}} 
+                    for term in search_terms
+                ]
+            }
+            results = list(docs_collection.find(text_query).limit(k))
+            logger.info(f"Text search found {len(results)} results")
         
+        # 3. Try vector search if text search fails
         if not results:
-            logger.info("No regex matches, attempting vector search...")
+            logger.info("Attempting vector search...")
             try:
-                # Generate query embedding
                 query_embedding = embeddings_model.embed_query(query)
                 
-                # Check if vector index exists
-                indexes = self.db.list_indexes()
+                # Verify vector index exists
+                indexes = docs_collection.list_indexes()
                 has_vector_index = any('vector_index' in idx.get('name', '') for idx in indexes)
                 
-                if not has_vector_index:
-                    logger.warning("Vector index not found, falling back to basic search")
-                    # Fallback to basic keyword search
-                    basic_query = {"text": {"$regex": f".*{query}.*", "$options": "i"}}
-                    results = list(self.docs_collection.find(basic_query).limit(k))
-                else:
-                    # Use vector search
+                if has_vector_index:
                     pipeline = [
                         {
                             '$search': {
@@ -112,42 +116,78 @@ def search_similar_chunks(self, query, k=3):
                             }
                         }
                     ]
-                    results = list(self.docs_collection.aggregate(pipeline))
+                    results = list(docs_collection.aggregate(pipeline))
+                    logger.info(f"Vector search found {len(results)} results")
             except Exception as ve:
-                logger.error(f"Vector search failed: {ve}")
-                # Fallback to basic search
-                basic_query = {"text": {"$regex": f".*{query}.*", "$options": "i"}}
-                results = list(self.docs_collection.find(basic_query).limit(k))
+                logger.error(f"Vector search failed: {ve}", exc_info=True)
         
-        # Log search results
-        num_results = len(results)
-        logger.info(f"Found {num_results} results")
+        # 4. If still no results, try fuzzy text search
+        if not results:
+            logger.info("Attempting fuzzy text search...")
+            fuzzy_query = {
+                "$or": [
+                    {"text": {"$regex": f"(?i).*{term}.*"}} 
+                    for term in search_terms
+                ]
+            }
+            results = list(docs_collection.find(fuzzy_query).limit(k))
+            logger.info(f"Fuzzy search found {len(results)} results")
         
-        if num_results > 0:
-            # Log a sample of what was found (first result)
-            first_result = results[0].get('text', '')[:100]  # First 100 chars
-            logger.info(f"Sample result: {first_result}...")
+        # Log results for debugging
+        if results:
+            for i, doc in enumerate(results[:2]):
+                preview = doc.get('text', '')[:100]
+                logger.info(f"Result {i+1} preview: {preview}...")
         else:
-            logger.warning("No results found in any search method")
-            
-            # Debug: Log collection stats
-            count = self.docs_collection.count_documents({})
-            logger.info(f"Total documents in collection: {count}")
-            
-            # Sample a random document to verify data
-            sample_doc = self.docs_collection.find_one()
+            # Debug information if no results found
+            doc_count = docs_collection.count_documents({})
+            logger.warning(f"No results found. Collection has {doc_count} documents")
+            sample_doc = docs_collection.find_one()
             if sample_doc:
-                logger.info("Sample document structure:")
-                logger.info(f"Keys present: {list(sample_doc.keys())}")
-            else:
-                logger.warning("No documents found in collection")
+                logger.info(f"Sample document fields: {list(sample_doc.keys())}")
         
-        return [doc['text'] for doc in results]
+        return [doc.get('text', '') for doc in results if doc.get('text')]
         
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        logger.error(f"Search error details:", exc_info=True)
+        logger.error(f"Search error: {str(e)}", exc_info=True)
         return []
+
+# Helper function to verify database setup
+async def verify_db_setup():
+    try:
+        # Test basic connectivity
+        mongo_client.admin.command('ping')
+        
+        # Verify collections exist
+        db_list = mongo_client.list_database_names()
+        if 'quantified_ante' not in db_list:
+            logger.error("Database 'quantified_ante' not found!")
+            return False
+            
+        # Check collection contents
+        doc_count = docs_collection.count_documents({})
+        logger.info(f"Found {doc_count} documents in collection")
+        
+        # Verify indexes
+        indexes = list(docs_collection.list_indexes())
+        logger.info(f"Collection indexes: {[idx.get('name') for idx in indexes]}")
+        
+        # Sample a document
+        sample = docs_collection.find_one()
+        if sample:
+            logger.info(f"Sample document fields: {list(sample.keys())}")
+            if 'text' not in sample:
+                logger.error("Documents missing 'text' field!")
+                return False
+        else:
+            logger.error("No documents found in collection!")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"Database verification failed: {str(e)}", exc_info=True)
+        return False
 
 @bot.tree.command(name="debug_db", description="Debug database content")
 async def debug_db(interaction: discord.Interaction):
@@ -262,100 +302,8 @@ async def ask(interaction: discord.Interaction, question: str):
                 "An error occurred while processing your question",
                 ephemeral=True
             )
-# Add these commands to your working bot code
 
-@bot.tree.command(name="debug", description="Check database content and bot status")
-async def debug(interaction: discord.Interaction):
-    try:
-        # Test MongoDB connection
-        mongo_client.admin.command('ping')
-        
-        # Get basic stats
-        docs_count = docs_collection.count_documents({})
-        qa_count = qa_collection.count_documents({})
-        
-        debug_msg = f"""✅ System Status:
-Bot: Connected as {bot.user}
-Server: {interaction.guild.name}
-Database: {mongo_client.get_database().name}
 
-📊 Collection Stats:
-- Documents: {docs_count}
-- QA Entries: {qa_count}
-"""
-        
-        # Get sample document
-        sample = docs_collection.find_one()
-        if sample:
-            debug_msg += "\n📄 Sample Document:\n"
-            debug_msg += f"Fields: {', '.join(sample.keys())}"
-            if 'text' in sample:
-                preview = sample['text'][:150] + "..." if len(sample['text']) > 150 else sample['text']
-                debug_msg += f"\nContent Preview: {preview}"
-                
-        # Recent QA history
-        recent_qa = list(qa_collection.find().sort('timestamp', -1).limit(3))
-        if recent_qa:
-            debug_msg += "\n\n📝 Recent Questions:\n"
-            for qa in recent_qa:
-                status = "✅" if qa.get('success', False) else "❌"
-                q_time = qa['timestamp'].strftime("%H:%M:%S")
-                debug_msg += f"{status} [{q_time}] {qa.get('question', 'N/A')}\n"
-        
-        await interaction.response.send_message(debug_msg)
-        
-    except Exception as e:
-        logger.error(f"Debug error: {e}")
-        await interaction.response.send_message(f"Error: {str(e)}")
-
-@bot.tree.command(name="debug_search", description="Test the search functionality")
-@app_commands.describe(test_query="Search query to test (optional)")
-async def debug_search(interaction: discord.Interaction, test_query: str = None):
-    try:
-        await interaction.response.defer()
-        
-        # Use provided query or default
-        query = test_query or "trading strategy"
-        
-        debug_msg = f"""🔍 Search Test:
-Query: "{query}"
-
-Searching..."""
-        
-        # Perform search
-        results = search_similar_chunks(query)
-        debug_msg += f"\nFound {len(results)} results."
-        
-        if results:
-            debug_msg += "\n\n📑 Top Results:"
-            for i, text in enumerate(results[:2], 1):
-                preview = text[:200] + "..." if len(text) > 200 else text
-                debug_msg += f"\n\n{i}. {preview}"
-        else:
-            # Show collection stats if no results
-            total_docs = docs_collection.count_documents({})
-            debug_msg += f"\n\nℹ️ No results found"
-            debug_msg += f"\nTotal documents in collection: {total_docs}"
-            
-            # Show sample document
-            sample = docs_collection.find_one()
-            if sample:
-                debug_msg += "\n\nSample document structure:"
-                debug_msg += f"\nFields: {', '.join(sample.keys())}"
-        
-        # Split long messages
-        if len(debug_msg) > 1990:
-            chunks = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
-            await interaction.followup.send(chunks[0])
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk)
-        else:
-            await interaction.followup.send(debug_msg)
-            
-    except Exception as e:
-        logger.error(f"Debug search error: {e}")
-        await interaction.followup.send(f"Error: {str(e)}")
-        
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f"Command error: {error}")
