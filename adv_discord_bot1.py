@@ -267,105 +267,95 @@ async def ask(interaction: discord.Interaction, question: str):
 @bot.tree.command(name="debug", description="Check database content and bot status")
 async def debug(interaction: discord.Interaction):
     try:
-        await interaction.response.defer()
-        
-        # Check MongoDB Connection
+        # Test MongoDB connection
         mongo_client.admin.command('ping')
         
-        # Get collection stats
-        docs_total = docs_collection.count_documents({})
-        qa_total = qa_collection.count_documents({})
+        # Get basic stats
+        docs_count = docs_collection.count_documents({})
+        qa_count = qa_collection.count_documents({})
         
-        # Get sample document
-        sample_doc = docs_collection.find_one()
-        
-        # Get recent QA history
-        recent_qa = list(qa_collection.find().sort('timestamp', -1).limit(3))
-        
-        debug_msg = f"""🔍 Debug Information:
+        debug_msg = f"""✅ System Status:
+Bot: Connected as {bot.user}
+Server: {interaction.guild.name}
+Database: {mongo_client.get_database().name}
 
-📡 Database Connection: Connected
-🗄️ Database: {db.name}
-
-📚 Collection Stats:
-- Documents: {docs_total}
-- QA History: {qa_total}
-
+📊 Collection Stats:
+- Documents: {docs_count}
+- QA Entries: {qa_count}
 """
         
-        if sample_doc:
-            debug_msg += f"📄 Document Fields: {', '.join(sample_doc.keys())}\n"
-            if 'text' in sample_doc:
-                preview = sample_doc['text'][:200] + "..." if len(sample_doc['text']) > 200 else sample_doc['text']
-                debug_msg += f"\nSample Content Preview:\n{preview}\n"
-        
+        # Get sample document
+        sample = docs_collection.find_one()
+        if sample:
+            debug_msg += "\n📄 Sample Document:\n"
+            debug_msg += f"Fields: {', '.join(sample.keys())}"
+            if 'text' in sample:
+                preview = sample['text'][:150] + "..." if len(sample['text']) > 150 else sample['text']
+                debug_msg += f"\nContent Preview: {preview}"
+                
+        # Recent QA history
+        recent_qa = list(qa_collection.find().sort('timestamp', -1).limit(3))
         if recent_qa:
-            debug_msg += "\n📝 Recent Questions:\n"
+            debug_msg += "\n\n📝 Recent Questions:\n"
             for qa in recent_qa:
                 status = "✅" if qa.get('success', False) else "❌"
-                timestamp = qa['timestamp'].strftime("%Y-%m-%d %H:%M")
-                debug_msg += f"{status} [{timestamp}] {qa.get('username', 'Unknown')}: {qa.get('question', 'N/A')}\n"
+                q_time = qa['timestamp'].strftime("%H:%M:%S")
+                debug_msg += f"{status} [{q_time}] {qa.get('question', 'N/A')}\n"
         
-        if len(debug_msg) > 1990:
-            parts = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
-            await interaction.followup.send(parts[0])
-            for part in parts[1:]:
-                await interaction.followup.send(part)
-        else:
-            await interaction.followup.send(debug_msg)
-            
+        await interaction.response.send_message(debug_msg)
+        
     except Exception as e:
-        logger.error(f"Debug error: {str(e)}")
-        await interaction.followup.send(f"Error during debug: {str(e)}")
+        logger.error(f"Debug error: {e}")
+        await interaction.response.send_message(f"Error: {str(e)}")
 
-@bot.tree.command(name="debug_search", description="Test search functionality")
-@app_commands.describe(query="Test query (optional)")
-async def debug_search(interaction: discord.Interaction, query: str = "trading basics"):
+@bot.tree.command(name="debug_search", description="Test the search functionality")
+@app_commands.describe(test_query="Search query to test (optional)")
+async def debug_search(interaction: discord.Interaction, test_query: str = None):
     try:
         await interaction.response.defer()
         
-        # Get total documents
-        total_docs = docs_collection.count_documents({})
+        # Use provided query or default
+        query = test_query or "trading strategy"
         
-        debug_msg = f"""🔍 Search Debug:
-
+        debug_msg = f"""🔍 Search Test:
 Query: "{query}"
-📚 Total Documents: {total_docs}
 
 Searching..."""
         
         # Perform search
-        similar_chunks = search_similar_chunks(query)
+        results = search_similar_chunks(query)
+        debug_msg += f"\nFound {len(results)} results."
         
-        debug_msg += f"\n\n🎯 Results Found: {len(similar_chunks)}"
-        
-        if similar_chunks:
-            debug_msg += "\n\n📑 Result Previews:"
-            for i, chunk in enumerate(similar_chunks[:2], 1):
-                preview = chunk[:200] + "..." if len(chunk) > 200 else chunk
-                debug_msg += f"\n\nResult {i}:\n{preview}"
+        if results:
+            debug_msg += "\n\n📑 Top Results:"
+            for i, text in enumerate(results[:2], 1):
+                preview = text[:200] + "..." if len(text) > 200 else text
+                debug_msg += f"\n\n{i}. {preview}"
         else:
-            # If no results, show sample document
+            # Show collection stats if no results
+            total_docs = docs_collection.count_documents({})
+            debug_msg += f"\n\nℹ️ No results found"
+            debug_msg += f"\nTotal documents in collection: {total_docs}"
+            
+            # Show sample document
             sample = docs_collection.find_one()
             if sample:
-                debug_msg += "\n\n❌ No results found. Sample document structure:"
+                debug_msg += "\n\nSample document structure:"
                 debug_msg += f"\nFields: {', '.join(sample.keys())}"
-                if 'text' in sample:
-                    preview = sample['text'][:200] + "..." if len(sample['text']) > 200 else sample['text']
-                    debug_msg += f"\nSample content:\n{preview}"
         
+        # Split long messages
         if len(debug_msg) > 1990:
-            parts = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
-            await interaction.followup.send(parts[0])
-            for part in parts[1:]:
-                await interaction.followup.send(part)
+            chunks = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
+            await interaction.followup.send(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
         else:
             await interaction.followup.send(debug_msg)
             
     except Exception as e:
-        logger.error(f"Debug search error: {str(e)}")
-        await interaction.followup.send(f"Error during debug: {str(e)}")
-
+        logger.error(f"Debug search error: {e}")
+        await interaction.followup.send(f"Error: {str(e)}")
+        
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f"Command error: {error}")
