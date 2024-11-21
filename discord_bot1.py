@@ -13,22 +13,60 @@ import asyncio
 from aiohttp import web
 import re
 
-# Enhanced logging configuration
+# Enhanced logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 logger = logging.getLogger('discord_bot')
 
-# Load environment variables
-load_dotenv()
+def load_environment():
+    """Load and validate environment variables"""
+    # Load from .env file if it exists
+    load_dotenv()
+    
+    # Get environment variables
+    config = {
+        'DISCORD_TOKEN': os.environ.get('DISCORD_TOKEN'),
+        'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY'),
+        'MONGODB_URI': os.environ.get('MONGODB_URI'),
+        'DB_NAME': os.environ.get('DB_NAME', 'quantified_ante'),
+        'PORT': int(os.environ.get('PORT', '8080'))
+    }
+    
+    # Log environment variable status (without sensitive data)
+    logger.info("Environment variable status:")
+    for key in config:
+        if key in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
+            logger.info(f"{key}: {'SET' if config[key] else 'NOT SET'}")
+        else:
+            logger.info(f"{key}: {config[key]}")
+    
+    # Validate required variables
+    missing_vars = [key for key, value in config.items() 
+                   if value is None and key != 'DB_NAME']
+    
+    if missing_vars:
+        error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
+    return config
 
-# Environment variables with error checking
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-MONGODB_URI = os.getenv('MONGODB_URI')
-DB_NAME = os.getenv('DB_NAME', 'quantified_ante')
-PORT = int(os.getenv('PORT', '8080'))
+# Load environment variables at startup
+try:
+    config = load_environment()
+    logger.info("Environment variables loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load environment variables: {e}")
+    raise
+
+# Use config values throughout your code
+DISCORD_TOKEN = config['DISCORD_TOKEN']
+OPENAI_API_KEY = config['OPENAI_API_KEY']
+MONGODB_URI = config['MONGODB_URI']
+DB_NAME = config['DB_NAME']
+PORT = config['PORT']
 
 # Validate required environment variables
 if not DISCORD_TOKEN:

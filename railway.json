@@ -5,7 +5,7 @@
         "buildCommand": "pip install -r requirements.txt"
     },
     "deploy": {
-        "startCommand": "python mongodb_connection.py",
+        "startCommand": "python discord_bot1.py",
         "restartPolicyType": "ON_FAILURE",
         "restartPolicyMaxRetries": 10
     }
