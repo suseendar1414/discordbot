@@ -53,15 +53,19 @@ class QABot(commands.Bot):
 bot = QABot()
 
 def search_similar_chunks(query, k=5):
-    """Search for similar chunks with better context"""
+    """Search for similar chunks with better context and debug logging"""
     try:
-        logger.info(f"Searching for: {query}")
-        search_terms = [
-            query.lower(),
-            *query.lower().split(),
-            *(f"{a} {b}" for a, b in zip(query.lower().split(), query.lower().split()[1:]))
-        ]
+        logger.info(f"Starting search for query: '{query}'")
         
+        # Generate search terms from the query
+        search_terms = [
+            query.lower(),  # Full query
+            *query.lower().split(),  # Individual words
+            *(f"{a} {b}" for a, b in zip(query.lower().split(), query.lower().split()[1:]))  # Word pairs
+        ]
+        logger.info(f"Generated search terms: {search_terms}")
+        
+        # Build OR query for multiple terms
         text_query = {
             "$or": [
                 {"text": {"$regex": f"(?i).*{term}.*"}} 
@@ -69,31 +73,100 @@ def search_similar_chunks(query, k=5):
             ]
         }
         
+        # Try text search first
+        logger.info("Attempting text-based search...")
         results = list(docs_collection.find(text_query).limit(k))
         logger.info(f"Found {len(results)} text matches")
         
+        # If no text results, try vector search
         if not results:
-            query_embedding = embeddings_model.embed_query(query)
-            pipeline = [
-                {
-                    '$search': {
-                        'index': 'vector_index',
-                        'knnBeta': {
-                            'vector': query_embedding,
-                            'path': 'embedding',
-                            'k': k
+            logger.info("No text matches found, attempting vector search...")
+            try:
+                query_embedding = embeddings_model.embed_query(query)
+                pipeline = [
+                    {
+                        '$search': {
+                            'index': 'vector_index',
+                            'knnBeta': {
+                                'vector': query_embedding,
+                                'path': 'embedding',
+                                'k': k
+                            }
                         }
                     }
-                }
-            ]
-            results = list(docs_collection.aggregate(pipeline))
-            logger.info(f"Found {len(results)} vector matches")
+                ]
+                results = list(docs_collection.aggregate(pipeline))
+                logger.info(f"Found {len(results)} vector matches")
+            except Exception as ve:
+                logger.error(f"Vector search failed: {ve}")
+                results = []
+        
+        # Debug log the results
+        if results:
+            logger.info("Sample of found content:")
+            for i, doc in enumerate(results[:2], 1):  # Log first 2 results
+                preview = doc['text'][:100] + "..." if len(doc['text']) > 100 else doc['text']
+                logger.info(f"Result {i}: {preview}")
+        else:
+            # If no results, log collection stats for debugging
+            total_docs = docs_collection.count_documents({})
+            logger.warning(f"No results found. Total documents in collection: {total_docs}")
+            
+            # Log a sample document structure
+            sample = docs_collection.find_one()
+            if sample:
+                logger.info(f"Sample document fields: {list(sample.keys())}")
         
         return [doc['text'] for doc in results]
         
     except Exception as e:
-        logger.error(f"Search error: {e}")
+        logger.error(f"Search error: {str(e)}", exc_info=True)
         return []
+
+@bot.tree.command(name="debug_search", description="Debug search functionality")
+async def debug_search(interaction: discord.Interaction, query: str):
+    """Command to debug search results"""
+    try:
+        await interaction.response.defer()
+        
+        # Get collection stats
+        total_docs = docs_collection.count_documents({})
+        
+        # Try the search
+        similar_chunks = search_similar_chunks(query)
+        
+        # Build debug response
+        debug_info = f"""🔍 Search Debug Info:
+Query: "{query}"
+Total documents in DB: {total_docs}
+Results found: {len(similar_chunks)}
+
+Sample Results:"""
+        
+        if similar_chunks:
+            for i, chunk in enumerate(similar_chunks[:2], 1):
+                preview = chunk[:200] + "..." if len(chunk) > 200 else chunk
+                debug_info += f"\n\nResult {i}:\n{preview}"
+        else:
+            debug_info += "\nNo results found"
+            
+            # Add sample document for debugging
+            sample = docs_collection.find_one()
+            if sample:
+                debug_info += f"\n\nSample document structure:\nFields: {list(sample.keys())}"
+        
+        # Split response if too long
+        if len(debug_info) > 1990:
+            parts = [debug_info[i:i+1990] for i in range(0, len(debug_info), 1990)]
+            await interaction.followup.send(parts[0])
+            for part in parts[1:]:
+                await interaction.followup.send(part)
+        else:
+            await interaction.followup.send(debug_info)
+            
+    except Exception as e:
+        logger.error(f"Debug search error: {str(e)}")
+        await interaction.followup.send(f"Error during debug: {str(e)}")
 
 @bot.event
 async def on_ready():
