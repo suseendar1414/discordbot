@@ -22,29 +22,41 @@ logger = logging.getLogger('discord_bot')
 
 def load_environment():
     """Load and validate environment variables"""
-    # Load from .env file if it exists
+    # Try to load from .env file
     load_dotenv()
     
-    # Get environment variables
-    config = {
-        'DISCORD_TOKEN': os.environ.get('DISCORD_TOKEN'),
-        'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY'),
-        'MONGODB_URI': os.environ.get('MONGODB_URI'),
-        'DB_NAME': os.environ.get('DB_NAME', 'quantified_ante'),
-        'PORT': int(os.environ.get('PORT', '8080'))
-    }
+    # Print current working directory and list files
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Files in directory: {os.listdir('.')}")
     
-    # Log environment variable status (without sensitive data)
-    logger.info("Environment variable status:")
-    for key in config:
-        if key in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
-            logger.info(f"{key}: {'SET' if config[key] else 'NOT SET'}")
+    # Try to read .env file directly
+    try:
+        with open('.env', 'r') as f:
+            logger.info("Contents of .env file:")
+            logger.info(f.read())
+    except Exception as e:
+        logger.warning(f"Could not read .env file: {e}")
+    
+    # Get environment variables with debug logging
+    config = {}
+    for var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI', 'DB_NAME', 'PORT']:
+        value = os.environ.get(var)
+        config[var] = value
+        # Log whether variable is set (without exposing sensitive values)
+        if var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
+            logger.info(f"{var}: {'SET' if value else 'NOT SET'}")
         else:
-            logger.info(f"{key}: {config[key]}")
+            logger.info(f"{var}: {value}")
+    
+    # Set defaults for optional variables
+    config['DB_NAME'] = config['DB_NAME'] or 'quantified_ante'
+    config['PORT'] = int(config['PORT'] or '8080')
     
     # Validate required variables
-    missing_vars = [key for key, value in config.items() 
-                   if value is None and key != 'DB_NAME']
+    missing_vars = []
+    for var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
+        if not config[var]:
+            missing_vars.append(var)
     
     if missing_vars:
         error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
@@ -54,12 +66,7 @@ def load_environment():
     return config
 
 # Load environment variables at startup
-try:
-    config = load_environment()
-    logger.info("Environment variables loaded successfully")
-except Exception as e:
-    logger.error(f"Failed to load environment variables: {e}")
-    raise
+config = load_environment()
 
 # Use config values throughout your code
 DISCORD_TOKEN = config['DISCORD_TOKEN']
