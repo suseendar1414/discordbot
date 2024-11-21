@@ -3,7 +3,7 @@ builder = "nixpacks"
 buildCommand = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "python discord_bot.py"
+startCommand = "python adv_discord_bot1.py"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 healthcheckPath = "/healthz"
