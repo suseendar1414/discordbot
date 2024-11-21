@@ -2,7 +2,6 @@ import os
 import logging
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 import certifi
 from langchain_openai import OpenAIEmbeddings
 from openai import OpenAI
@@ -23,11 +22,26 @@ logger = logging.getLogger('discord_bot')
 
 # Load environment variables
 load_dotenv()
+
+# Environment variables with error checking
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 DB_NAME = os.getenv('DB_NAME', 'quantified_ante')
 PORT = int(os.getenv('PORT', '8080'))
+
+# Validate required environment variables
+if not DISCORD_TOKEN:
+    raise ValueError("DISCORD_TOKEN environment variable is not set")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is not set")
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI environment variable is not set")
+
+# Log configuration (without sensitive details)
+logger.info("Environment variables loaded")
+logger.info(f"Database name: {DB_NAME}")
+logger.info(f"Port: {PORT}")
 
 class DatabaseManager:
     def __init__(self):
@@ -42,6 +56,10 @@ class DatabaseManager:
         try:
             logger.info("Initializing MongoDB connection...")
             
+            # Verify MONGODB_URI
+            if not MONGODB_URI or MONGODB_URI == "your_mongodb_uri":
+                raise ValueError("Invalid MONGODB_URI")
+                
             connection_options = {
                 'serverSelectionTimeoutMS': 5000,
                 'connectTimeoutMS': 5000,
@@ -52,7 +70,10 @@ class DatabaseManager:
                 'tlsCAFile': certifi.where()
             }
             
+            # Create MongoDB client with full URI
             self.client = MongoClient(MONGODB_URI, **connection_options)
+            
+            # Test connection
             self.client.admin.command('ping')
             
             self.db = self.client[DB_NAME]
@@ -235,7 +256,15 @@ class QABot(commands.Bot):
 
 # Initialize bot and clients
 bot = QABot()
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+try:
+    if not OPENAI_API_KEY or OPENAI_API_KEY == "your_openai_api_key":
+        raise ValueError("Invalid OpenAI API key")
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    embeddings_model = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+    logger.info("OpenAI client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI client: {str(e)}")
+    raise
 embeddings_model = OpenAIEmbeddings()
 
 # Health check endpoint
@@ -493,6 +522,10 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        # Verify all required services are properly configured
+        if not all([DISCORD_TOKEN, OPENAI_API_KEY, MONGODB_URI]):
+            raise ValueError("Missing required environment variables")
+            
         logger.info("Starting services...")
         asyncio.run(main())
     except KeyboardInterrupt:
