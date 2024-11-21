@@ -249,129 +249,110 @@ async def ask(interaction: discord.Interaction, question: str):
                 "An error occurred while processing your question",
                 ephemeral=True
             )
+# Add these commands to your working bot code
 
-@bot.tree.command(name="debug", description="Debug database and bot status")
+@bot.tree.command(name="debug", description="Check database content and bot status")
 async def debug(interaction: discord.Interaction):
-    """Command to check database status and content"""
     try:
         await interaction.response.defer()
         
-        debug_info = "🔧 Debug Information:\n\n"
+        # Check MongoDB Connection
+        mongo_client.admin.command('ping')
         
-        # 1. Check MongoDB Connection
-        try:
-            mongo_client.admin.command('ping')
-            debug_info += "📡 MongoDB Connection: ✅ Connected\n"
-        except Exception as e:
-            debug_info += f"📡 MongoDB Connection: ❌ Error: {str(e)}\n"
+        # Get collection stats
+        docs_total = docs_collection.count_documents({})
+        qa_total = qa_collection.count_documents({})
         
-        # 2. Document Collections Stats
-        try:
-            # Check documents collection
-            docs_count = docs_collection.count_documents({})
-            debug_info += f"\n📚 Documents Collection:\n"
-            debug_info += f"Total documents: {docs_count}\n"
-            
-            # Sample document structure
-            sample_doc = docs_collection.find_one()
-            if sample_doc:
-                debug_info += "Document structure:\n"
-                debug_info += f"Fields: {', '.join(sample_doc.keys())}\n"
-                # Show a preview of the text content
-                if 'text' in sample_doc:
-                    preview = sample_doc['text'][:200] + "..." if len(sample_doc['text']) > 200 else sample_doc['text']
-                    debug_info += f"Sample text preview:\n{preview}\n"
-            
-            # Check QA history collection
-            qa_count = qa_collection.count_documents({})
-            debug_info += f"\n💬 QA History Collection:\n"
-            debug_info += f"Total QA pairs: {qa_count}\n"
-            
-            # Recent questions
-            recent_questions = list(qa_collection.find().sort('timestamp', -1).limit(3))
-            if recent_questions:
-                debug_info += "\nRecent questions:\n"
-                for qa in recent_questions:
-                    status = "✅" if qa.get('success', False) else "❌"
-                    debug_info += f"{status} {qa.get('question', 'N/A')}\n"
-            
-        except Exception as e:
-            debug_info += f"\nCollection Stats Error: {str(e)}\n"
+        # Get sample document
+        sample_doc = docs_collection.find_one()
         
-        await interaction.followup.send(debug_info)
+        # Get recent QA history
+        recent_qa = list(qa_collection.find().sort('timestamp', -1).limit(3))
         
-    except Exception as e:
-        logger.error(f"Debug command error: {str(e)}")
-        await interaction.followup.send(f"Error during debug: {str(e)}")
+        debug_msg = f"""🔍 Debug Information:
 
-@bot.tree.command(name="debug_search", description="Test search functionality")
-@app_commands.describe(query="Test query to search for")
-async def debug_search(interaction: discord.Interaction, query: str = None):
-    """Command to test search functionality"""
-    try:
-        await interaction.response.defer()
+📡 Database Connection: Connected
+🗄️ Database: {db.name}
+
+📚 Collection Stats:
+- Documents: {docs_total}
+- QA History: {qa_total}
+
+"""
         
-        debug_info = "🔍 Search Debug Results:\n\n"
+        if sample_doc:
+            debug_msg += f"📄 Document Fields: {', '.join(sample_doc.keys())}\n"
+            if 'text' in sample_doc:
+                preview = sample_doc['text'][:200] + "..." if len(sample_doc['text']) > 200 else sample_doc['text']
+                debug_msg += f"\nSample Content Preview:\n{preview}\n"
         
-        # If no query provided, use a test query
-        if not query:
-            query = "trading basics"
-            debug_info += f"Using test query: '{query}'\n\n"
-        else:
-            debug_info += f"Query: '{query}'\n\n"
+        if recent_qa:
+            debug_msg += "\n📝 Recent Questions:\n"
+            for qa in recent_qa:
+                status = "✅" if qa.get('success', False) else "❌"
+                timestamp = qa['timestamp'].strftime("%Y-%m-%d %H:%M")
+                debug_msg += f"{status} [{timestamp}] {qa.get('username', 'Unknown')}: {qa.get('question', 'N/A')}\n"
         
-        # 1. Collection Status
-        docs_count = docs_collection.count_documents({})
-        debug_info += f"📚 Total documents in database: {docs_count}\n"
-        
-        # 2. Perform Search
-        try:
-            # Generate search terms for visibility
-            search_terms = [
-                query.lower(),
-                *query.lower().split(),
-                *(f"{a} {b}" for a, b in zip(query.lower().split(), query.lower().split()[1:]))
-            ]
-            debug_info += f"\n🔤 Search terms generated:\n{', '.join(search_terms)}\n"
-            
-            # Execute search
-            results = search_similar_chunks(query)
-            debug_info += f"\n🎯 Results found: {len(results)}\n"
-            
-            # Show results preview
-            if results:
-                debug_info += "\n📑 Result previews:\n"
-                for i, result in enumerate(results[:2], 1):
-                    preview = result[:200] + "..." if len(result) > 200 else result
-                    debug_info += f"\nResult {i}:\n{preview}\n"
-            else:
-                debug_info += "\n❌ No results found\n"
-                
-                # Show a sample document for debugging
-                sample = docs_collection.find_one()
-                if sample:
-                    debug_info += "\n📄 Sample document from database:\n"
-                    if 'text' in sample:
-                        preview = sample['text'][:200] + "..." if len(sample['text']) > 200 else sample['text']
-                        debug_info += f"Text preview: {preview}\n"
-                    debug_info += f"Available fields: {', '.join(sample.keys())}\n"
-                    
-        except Exception as e:
-            debug_info += f"\n⚠️ Search error: {str(e)}\n"
-        
-        # Split response if too long
-        if len(debug_info) > 1990:
-            parts = [debug_info[i:i+1990] for i in range(0, len(debug_info), 1990)]
+        if len(debug_msg) > 1990:
+            parts = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
             await interaction.followup.send(parts[0])
             for part in parts[1:]:
                 await interaction.followup.send(part)
         else:
-            await interaction.followup.send(debug_info)
+            await interaction.followup.send(debug_msg)
+            
+    except Exception as e:
+        logger.error(f"Debug error: {str(e)}")
+        await interaction.followup.send(f"Error during debug: {str(e)}")
+
+@bot.tree.command(name="debug_search", description="Test search functionality")
+@app_commands.describe(query="Test query (optional)")
+async def debug_search(interaction: discord.Interaction, query: str = "trading basics"):
+    try:
+        await interaction.response.defer()
+        
+        # Get total documents
+        total_docs = docs_collection.count_documents({})
+        
+        debug_msg = f"""🔍 Search Debug:
+
+Query: "{query}"
+📚 Total Documents: {total_docs}
+
+Searching..."""
+        
+        # Perform search
+        similar_chunks = search_similar_chunks(query)
+        
+        debug_msg += f"\n\n🎯 Results Found: {len(similar_chunks)}"
+        
+        if similar_chunks:
+            debug_msg += "\n\n📑 Result Previews:"
+            for i, chunk in enumerate(similar_chunks[:2], 1):
+                preview = chunk[:200] + "..." if len(chunk) > 200 else chunk
+                debug_msg += f"\n\nResult {i}:\n{preview}"
+        else:
+            # If no results, show sample document
+            sample = docs_collection.find_one()
+            if sample:
+                debug_msg += "\n\n❌ No results found. Sample document structure:"
+                debug_msg += f"\nFields: {', '.join(sample.keys())}"
+                if 'text' in sample:
+                    preview = sample['text'][:200] + "..." if len(sample['text']) > 200 else sample['text']
+                    debug_msg += f"\nSample content:\n{preview}"
+        
+        if len(debug_msg) > 1990:
+            parts = [debug_msg[i:i+1990] for i in range(0, len(debug_msg), 1990)]
+            await interaction.followup.send(parts[0])
+            for part in parts[1:]:
+                await interaction.followup.send(part)
+        else:
+            await interaction.followup.send(debug_msg)
             
     except Exception as e:
         logger.error(f"Debug search error: {str(e)}")
         await interaction.followup.send(f"Error during debug: {str(e)}")
-
+        
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f"Command error: {error}")
