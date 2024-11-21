@@ -3,12 +3,12 @@ builder = "nixpacks"
 buildCommand = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "python mongodb_connection.py"
+startCommand = "python main.py"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
-healthcheckPath = "/"
-healthcheckTimeout = 300
-healthcheckInterval = 60
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+healthcheckInterval = 15
 
 [service]
 internal_port = 8080

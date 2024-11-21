@@ -10,10 +10,10 @@ urllib3>=2.1.0
 cryptography>=41.0.5
 aiohttp>=3.9.1
 certifi==2024.8.30
-pymongo[srv]
-dnspython
-discord.py>=2.0.0
 python-dotenv
 pymongo[srv,zlib]>=4.6.0
-dnspython>=2.4.0
 certifi>=2023.7.22
+discord.py>=2.0.0
+python-dotenv
+pymongo[srv]>=4.6.0
+dnspython>=2.4.0
