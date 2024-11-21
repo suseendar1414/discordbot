@@ -1,22 +1,17 @@
 import os
 import logging
-from typing import List, Optional, Dict, Any
-from datetime import datetime
-import certifi
 from dotenv import load_dotenv
 from openai import OpenAI
-from pymongo import MongoClient, ASCENDING
-from pymongo.errors import OperationFailure
+from pymongo import MongoClient
+import certifi
 from langchain_openai import OpenAIEmbeddings
 import discord
 from discord import app_commands
 from discord.ext import commands
+from datetime import datetime
 
-# Setup logging with more detailed format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('discord_bot')
 
 # Load environment variables
@@ -25,142 +20,25 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 MONGODB_URI = os.getenv('MONGODB_URI')
 
-class DocumentSearch:
-    def __init__(self, mongo_uri: str, db_name: str = 'quantified_ante', 
-                 collection_name: str = 'documents'):
-        self.logger = logging.getLogger('document_search')
-        self.mongo_client = MongoClient(mongo_uri, tls=True, tlsCAFile=certifi.where())
-        self.db = self.mongo_client[db_name]
-        self.collection = self.db[collection_name]
-        self.embeddings_model = OpenAIEmbeddings()
-        
-        # Ensure indexes exist
-        self._setup_indexes()
-    
-    def _setup_indexes(self):
-        """Setup necessary indexes for efficient searching"""
-        try:
-            # Text index for text-based searches
-            self.collection.create_index([("text", "text")], 
-                                      name="text_search_index")
-            
-            # Regular index on text field for regex queries
-            self.collection.create_index([("text", ASCENDING)], 
-                                       name="text_regex_index")
-            
-            self.logger.info("Indexes created successfully")
-        except OperationFailure as e:
-            self.logger.error(f"Failed to create indexes: {e}")
-    
-    def _clean_query(self, query: str) -> str:
-        """Clean and normalize the query string"""
-        return " ".join(query.lower().split())
-    
-    def _get_search_terms(self, query: str) -> List[str]:
-        """Generate search terms from the query"""
-        words = query.lower().split()
-        terms = [
-            query.lower(),  # Full query
-            *[term.strip() for term in words if term.strip()],  # Individual words
-            *[f"{a} {b}" for a, b in zip(words, words[1:])],  # Word pairs
-        ]
-        return [term for term in terms if term]  # Remove empty terms
-    
-    async def verify_connection(self) -> bool:
-        """Verify database connection and setup"""
-        try:
-            # Test connection
-            self.mongo_client.admin.command('ping')
-            
-            # Verify collection exists and has documents
-            doc_count = self.collection.count_documents({})
-            if doc_count == 0:
-                self.logger.error("Collection is empty")
-                return False
-            
-            # Verify document structure
-            sample = self.collection.find_one()
-            if not sample or 'text' not in sample:
-                self.logger.error("Invalid document structure")
-                return False
-            
-            self.logger.info(f"Connection verified. {doc_count} documents found")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Connection verification failed: {e}")
-            return False
-    
-    def search(self, query: str, k: int = 5) -> List[str]:
-        """
-        Multi-strategy search implementation
-        Returns list of relevant text chunks
-        """
-        try:
-            clean_query = self._clean_query(query)
-            search_terms = self._get_search_terms(clean_query)
-            results = []
-            
-            # 1. Try exact phrase match first
-            if not results:
-                results = list(self.collection.find(
-                    {"$text": {"$search": f"\"{clean_query}\""}},
-                    {"score": {"$meta": "textScore"}, "text": 1}
-                ).sort([("score", {"$meta": "textScore"})]).limit(k))
-            
-            # 2. Try text search with individual terms
-            if not results:
-                results = list(self.collection.find(
-                    {"$text": {"$search": " ".join(search_terms)}},
-                    {"score": {"$meta": "textScore"}, "text": 1}
-                ).sort([("score", {"$meta": "textScore"})]).limit(k))
-            
-            # 3. Try vector search if available
-            if not results:
-                try:
-                    query_embedding = self.embeddings_model.embed_query(clean_query)
-                    pipeline = [
-                        {
-                            "$search": {
-                                "index": "vector_index",
-                                "knnBeta": {
-                                    "vector": query_embedding,
-                                    "path": "embedding",
-                                    "k": k
-                                }
-                            }
-                        },
-                        {"$project": {"text": 1, "_id": 0}}
-                    ]
-                    results = list(self.collection.aggregate(pipeline))
-                except Exception as ve:
-                    self.logger.warning(f"Vector search failed: {ve}")
-            
-            # 4. Fallback to regex search
-            if not results:
-                regex_patterns = [
-                    {"text": {"$regex": f"(?i){term}", "$options": "i"}}
-                    for term in search_terms
-                ]
-                results = list(self.collection.find(
-                    {"$or": regex_patterns},
-                    {"text": 1, "_id": 0}
-                ).limit(k))
-            
-            # Extract and return text from results
-            texts = [doc.get('text', '') for doc in results if doc.get('text')]
-            
-            # Log search results
-            self.logger.info(
-                f"Query: '{query}' found {len(texts)} results using "
-                f"{'vector' if 'vector_index' in str(results) else 'text'} search"
-            )
-            
-            return texts
-            
-        except Exception as e:
-            self.logger.error(f"Search failed: {e}", exc_info=True)
-            return []
+# Initialize OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+# MongoDB setup
+mongo_client = MongoClient(
+    MONGODB_URI,
+    tls=True,
+    tlsCAFile=certifi.where()
+)
+db = mongo_client['quantified_ante']
+docs_collection = db['documents']
+qa_collection = db['qa_history']
+
+# Initialize embeddings
+embeddings_model = OpenAIEmbeddings()
+
+# Bot setup
+intents = discord.Intents.default()
+intents.message_content = True
 
 class QABot(commands.Bot):
     def __init__(self):
@@ -168,189 +46,178 @@ class QABot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
         
-        # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        # Initialize document search
-        self.document_search = DocumentSearch(MONGODB_URI)
-        
-        # Initialize MongoDB for QA history
-        self.mongo_client = MongoClient(MONGODB_URI, tls=True, tlsCAFile=certifi.where())
-        self.db = self.mongo_client['quantified_ante']
-        self.qa_collection = self.db['qa_history']
-        
     async def setup_hook(self):
-        """Initial setup after bot is ready"""
         try:
-            # Verify database connection
-            if not await self.document_search.verify_connection():
-                logger.error("❌ Database verification failed!")
-                return
-            
-            # Sync commands
-            await self.tree.sync()
+            await self.tree.sync()  # Syncs commands globally
             logger.info("✅ Commands synced globally!")
             
-            # Log registered commands
+            # Verify sync by listing registered commands
             commands = await self.tree.fetch_commands()
             logger.info(f"Registered commands: {[cmd.name for cmd in commands]}")
-            
         except Exception as e:
-            logger.error(f"❌ Setup failed: {str(e)}")
+            logger.error(f"❌ Command sync failed: {str(e)}")
             raise
 
-    def store_qa_interaction(self, user_id: int, question: str, answer: str):
-        """Store Q&A interaction in MongoDB"""
-        try:
-            self.qa_collection.insert_one({
-                'user_id': user_id,
-                'question': question,
-                'answer': answer,
-                'timestamp': datetime.utcnow()
-            })
-        except Exception as e:
-            logger.error(f"Failed to store Q&A interaction: {e}")
-
-    async def generate_response(self, question: str, context: str) -> str:
-        """Generate response using OpenAI"""
-        try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a Quantified Ante trading assistant. "
-                            "Provide accurate, helpful responses based on the "
-                            "context provided. If the context doesn't contain "
-                            "relevant information, acknowledge that and suggest "
-                            "rephrasing the question."
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Context: {context}\n\nQuestion: {question}"
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
-            raise
+    async def on_ready(self):
+        logger.info(f'Bot is ready! Logged in as {bot.user}')
+        logger.info(f'Connected to {len(bot.guilds)} servers:')
+        for guild in bot.guilds:
+            logger.info(f'- {guild.name} (id: {guild.id})')
 
 bot = QABot()
 
-@bot.tree.command(name="ping", description="Test if the bot is working")
-async def ping(interaction: discord.Interaction):
-    """Simple ping command to check bot's status"""
+def search_similar_chunks(query, k=5):
+    """Search for similar chunks using multiple search strategies"""
     try:
-        await interaction.response.defer(ephemeral=True)
+        logger.info(f"Starting search for query: '{query}'")
         
-        # Test MongoDB connection
-        db_status = "Connected" if await bot.document_search.verify_connection() else "Disconnected"
+        # 1. Prepare search terms for better matching
+        search_terms = [
+            query.lower(),  # Full query
+            *[term.strip() for term in query.lower().split() if term.strip()],  # Individual words
+            # Word pairs for better context matching
+            *[f"{a} {b}".strip() for a, b in zip(query.lower().split(), query.lower().split()[1:]) if a.strip() and b.strip()]
+        ]
+        logger.info(f"Search terms: {search_terms}")
         
-        response = f"""🤖 Bot Status: Online
-📊 MongoDB: {db_status}
-⚡ Latency: {round(bot.latency * 1000)}ms"""
+        results = []
         
-        await interaction.followup.send(response, ephemeral=True)
-    except Exception as e:
-        logger.error(f"Ping error: {e}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "❌ Error checking status",
-                ephemeral=True
-            )
-
-@bot.tree.command(name="ask", description="Ask about Quantified Ante trading")
-@app_commands.describe(question="Your question about trading")
-async def ask(interaction: discord.Interaction, question: str):
-    """Main Q&A command"""
-    try:
-        await interaction.response.defer()
+        # 2. Try exact text search first
+        if not results:
+            text_query = {
+                "$or": [
+                    {"text": {"$regex": f"(?i){term}"}} 
+                    for term in search_terms
+                ]
+            }
+            results = list(docs_collection.find(text_query).limit(k))
+            logger.info(f"Text search found {len(results)} results")
         
-        # Log the question
-        logger.info(f"Question from {interaction.user}: {question}")
+        # 3. Try vector search if text search fails
+        if not results:
+            logger.info("Attempting vector search...")
+            try:
+                query_embedding = embeddings_model.embed_query(query)
+                
+                # Verify vector index exists
+                indexes = docs_collection.list_indexes()
+                has_vector_index = any('vector_index' in idx.get('name', '') for idx in indexes)
+                
+                if has_vector_index:
+                    pipeline = [
+                        {
+                            '$search': {
+                                'index': 'vector_index',
+                                'knnBeta': {
+                                    'vector': query_embedding,
+                                    'path': 'embedding',
+                                    'k': k
+                                }
+                            }
+                        }
+                    ]
+                    results = list(docs_collection.aggregate(pipeline))
+                    logger.info(f"Vector search found {len(results)} results")
+            except Exception as ve:
+                logger.error(f"Vector search failed: {ve}", exc_info=True)
         
-        # Search for relevant content
-        similar_chunks = bot.document_search.search(question)
+        # 4. If still no results, try fuzzy text search
+        if not results:
+            logger.info("Attempting fuzzy text search...")
+            fuzzy_query = {
+                "$or": [
+                    {"text": {"$regex": f"(?i).*{term}.*"}} 
+                    for term in search_terms
+                ]
+            }
+            results = list(docs_collection.find(fuzzy_query).limit(k))
+            logger.info(f"Fuzzy search found {len(results)} results")
         
-        if not similar_chunks:
-            await interaction.followup.send(
-                "I couldn't find relevant information. Please try rephrasing your question.",
-                ephemeral=True
-            )
-            return
-        
-        # Generate response
-        context = "\n".join(similar_chunks)
-        answer = await bot.generate_response(question, context)
-        
-        # Store the interaction
-        bot.store_qa_interaction(
-            interaction.user.id,
-            question,
-            answer
-        )
-        
-        # Send response in chunks if needed
-        if len(answer) > 1900:  # Discord's message length limit
-            chunks = [answer[i:i+1900] for i in range(0, len(answer), 1900)]
-            await interaction.followup.send(chunks[0])
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk)
+        # Log results for debugging
+        if results:
+            for i, doc in enumerate(results[:2]):
+                preview = doc.get('text', '')[:100]
+                logger.info(f"Result {i+1} preview: {preview}...")
         else:
-            await interaction.followup.send(answer)
-            
+            # Debug information if no results found
+            doc_count = docs_collection.count_documents({})
+            logger.warning(f"No results found. Collection has {doc_count} documents")
+            sample_doc = docs_collection.find_one()
+            if sample_doc:
+                logger.info(f"Sample document fields: {list(sample_doc.keys())}")
+        
+        return [doc.get('text', '') for doc in results if doc.get('text')]
+        
     except Exception as e:
-        logger.error(f"Ask error: {e}")
-        if not interaction.response.is_done():
-            await interaction.followup.send(
-                "An error occurred while processing your question",
-                ephemeral=True
-            )
+        logger.error(f"Search error: {str(e)}", exc_info=True)
+        return []
+
+# Helper function to verify database setup
+async def verify_db_setup():
+    try:
+        # Test basic connectivity
+        mongo_client.admin.command('ping')
+        
+        # Verify collections exist
+        db_list = mongo_client.list_database_names()
+        if 'quantified_ante' not in db_list:
+            logger.error("Database 'quantified_ante' not found!")
+            return False
+            
+        # Check collection contents
+        doc_count = docs_collection.count_documents({})
+        logger.info(f"Found {doc_count} documents in collection")
+        
+        # Verify indexes
+        indexes = list(docs_collection.list_indexes())
+        logger.info(f"Collection indexes: {[idx.get('name') for idx in indexes]}")
+        
+        # Sample a document
+        sample = docs_collection.find_one()
+        if sample:
+            logger.info(f"Sample document fields: {list(sample.keys())}")
+            if 'text' not in sample:
+                logger.error("Documents missing 'text' field!")
+                return False
+        else:
+            logger.error("No documents found in collection!")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"Database verification failed: {str(e)}", exc_info=True)
+        return False
 
 @bot.tree.command(name="debug_db", description="Debug database content")
 async def debug_db(interaction: discord.Interaction):
-    """Command to debug database status"""
     try:
         await interaction.response.defer()
         
         # Get collection stats
-        doc_count = bot.db.documents.count_documents({})
-        qa_count = bot.qa_collection.count_documents({})
+        doc_count = bot.db.docs_collection.count_documents({})
         
-        # Sample documents
-        sample_doc = bot.db.documents.find_one()
-        recent_qa = list(bot.qa_collection.find().sort('timestamp', -1).limit(1))
+        # Sample a document
+        sample_doc = bot.db.docs_collection.find_one()
         
         # Check indexes
-        doc_indexes = list(bot.db.documents.list_indexes())
+        indexes = list(bot.db.docs_collection.list_indexes())
+        index_names = [index.get('name') for index in indexes]
         
         response = (
-            f"📊 Database Stats:\n"
-            f"Documents: {doc_count}\n"
-            f"QA Records: {qa_count}\n"
-            f"Indexes: {', '.join(idx['name'] for idx in doc_indexes)}\n\n"
+            f"📊 Database Debug Info:\n"
+            f"Total documents: {doc_count}\n"
+            f"Indexes: {', '.join(index_names)}\n\n"
         )
         
         if sample_doc:
             response += (
-                f"📄 Sample Document:\n"
+                f"📄 Sample document structure:\n"
                 f"Fields: {', '.join(sample_doc.keys())}\n"
-                f"Text Preview: {sample_doc.get('text', 'N/A')[:100]}...\n\n"
+                f"Text preview: {sample_doc.get('text', 'N/A')[:100]}...\n"
             )
-        
-        if recent_qa:
-            qa = recent_qa[0]
-            response += (
-                f"❓ Latest Q&A:\n"
-                f"Time: {qa['timestamp']}\n"
-                f"Q: {qa['question'][:100]}...\n"
-                f"A: {qa['answer'][:100]}...\n"
-            )
+        else:
+            response += "❌ No documents found in collection"
         
         await interaction.followup.send(response)
         
@@ -362,8 +229,83 @@ async def debug_db(interaction: discord.Interaction):
         )
 
 @bot.event
+async def on_ready():
+    logger.info(f'Logged in as {bot.user}')
+    await bot.tree.sync()
+
+@bot.tree.command(name="ping", description="Test if the bot is working")
+async def ping(interaction: discord.Interaction):
+    try:
+        # Immediately acknowledge the interaction
+        await interaction.response.defer(ephemeral=True)
+        
+        # Test MongoDB connection
+        mongo_client.admin.command('ping')
+        mongo_status = "Connected"
+        
+        response = f"""Bot Status: Online
+MongoDB: {mongo_status}
+Latency: {round(bot.latency * 1000)}ms"""
+        
+        await interaction.followup.send(response, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Ping error: {e}")
+        # Make sure we haven't already responded
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Error checking status", ephemeral=True)
+
+@bot.tree.command(name="ask", description="Ask about Quantified Ante trading")
+@app_commands.describe(question="Your question about trading")
+async def ask(interaction: discord.Interaction, question: str):
+    try:
+        # Immediately acknowledge the interaction
+        await interaction.response.defer()
+        
+        # Log the question
+        logger.info(f"Question from {interaction.user}: {question}")
+        
+        # Search for relevant content
+        similar_chunks = search_similar_chunks(question)
+        
+        if not similar_chunks:
+            await interaction.followup.send(
+                "I couldn't find relevant information. Please try rephrasing your question.",
+                ephemeral=True
+            )
+            return
+        
+        # Generate response
+        context = "\n".join(similar_chunks)
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a Quantified Ante trading assistant."},
+                {"role": "user", "content": f"Context: {context}\n\nQuestion: {question}"}
+            ]
+        )
+        
+        answer = response.choices[0].message.content
+        
+        # Send response in chunks if needed
+        if len(answer) > 1900:
+            chunks = [answer[i:i+1900] for i in range(0, len(answer), 1900)]
+            await interaction.followup.send(chunks[0])
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk)
+        else:
+            await interaction.followup.send(answer)
+            
+    except Exception as e:
+        logger.error(f"Ask error: {e}")
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "An error occurred while processing your question",
+                ephemeral=True
+            )
+
+
+@bot.event
 async def on_command_error(ctx, error):
-    """Global error handler"""
     logger.error(f"Command error: {error}")
 
 if __name__ == "__main__":
