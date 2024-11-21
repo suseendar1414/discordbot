@@ -13,7 +13,6 @@ import asyncio
 from aiohttp import web
 import re
 
-# Enhanced logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
@@ -21,45 +20,58 @@ logging.basicConfig(
 logger = logging.getLogger('discord_bot')
 
 def load_environment():
-    """Load and validate environment variables"""
-    # Try to load from .env file
-    load_dotenv()
-    
-    # Print current working directory and list files
-    logger.info(f"Current working directory: {os.getcwd()}")
-    logger.info(f"Files in directory: {os.listdir('.')}")
-    
-    # Try to read .env file directly
-    try:
-        with open('.env', 'r') as f:
-            logger.info("Contents of .env file:")
-            logger.info(f.read())
-    except Exception as e:
-        logger.warning(f"Could not read .env file: {e}")
-    
-    # Get environment variables with debug logging
-    config = {}
-    for var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI', 'DB_NAME', 'PORT']:
-        value = os.environ.get(var)
-        config[var] = value
-        # Log whether variable is set (without exposing sensitive values)
-        if var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
-            logger.info(f"{var}: {'SET' if value else 'NOT SET'}")
+    """Load and validate environment variables with enhanced debugging"""
+    # Debug: Print all environment variables (excluding sensitive values)
+    logger.info("==== Environment Variables Debug ====")
+    for key in os.environ:
+        if any(sensitive in key.lower() for sensitive in ['token', 'key', 'password', 'secret', 'uri']):
+            logger.info(f"{key}: [HIDDEN FOR SECURITY]")
         else:
-            logger.info(f"{var}: {value}")
+            logger.info(f"{key}: {os.environ.get(key)}")
+    logger.info("==== End Environment Variables Debug ====")
     
-    # Set defaults for optional variables
-    config['DB_NAME'] = config['DB_NAME'] or 'quantified_ante'
-    config['PORT'] = int(config['PORT'] or '8080')
+    # Try to load from .env file (for local development)
+    try:
+        load_dotenv()
+        logger.info("Attempted to load .env file")
+    except Exception as e:
+        logger.warning(f"Could not load .env file: {e}")
     
-    # Validate required variables
+    # Initialize config dictionary
+    config = {}
+    
+    # Get required variables with detailed logging
+    required_vars = ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']
     missing_vars = []
-    for var in ['DISCORD_TOKEN', 'OPENAI_API_KEY', 'MONGODB_URI']:
-        if not config[var]:
-            missing_vars.append(var)
     
+    for var in required_vars:
+        value = os.getenv(var)
+        if value:
+            config[var] = value
+            logger.info(f"✅ {var} is set and non-empty")
+        else:
+            missing_vars.append(var)
+            logger.error(f"❌ {var} is not set or empty")
+            
+            # Additional debugging for Railway
+            railway_var = os.getenv(f"RAILWAY_{var}")
+            if railway_var:
+                logger.info(f"Found alternative RAILWAY_{var}")
+                config[var] = railway_var
+    
+    # Set optional variables with defaults
+    config['DB_NAME'] = os.getenv('DB_NAME', 'quantified_ante')
+    config['PORT'] = int(os.getenv('PORT', '8080'))
+    
+    logger.info(f"DB_NAME set to: {config['DB_NAME']}")
+    logger.info(f"PORT set to: {config['PORT']}")
+    
+    # Final validation
     if missing_vars:
-        error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+        error_msg = (
+            f"Missing required environment variables: {', '.join(missing_vars)}\n"
+            "Please check Railway dashboard and ensure variables are set correctly."
+        )
         logger.error(error_msg)
         raise ValueError(error_msg)
     
@@ -567,14 +579,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Verify all required services are properly configured
-        if not all([DISCORD_TOKEN, OPENAI_API_KEY, MONGODB_URI]):
-            raise ValueError("Missing required environment variables")
-            
-        logger.info("Starting services...")
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Application stopped by user")
+        config = load_environment()
+        logger.info("Environment loaded successfully!")
     except Exception as e:
-        logger.error(f"Application crashed: {str(e)}")
-        raise
+        logger.error(f"Failed to load environment: {e}")

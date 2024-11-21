@@ -1,14 +1,19 @@
-[build]
+[
+build
+]
 builder = "nixpacks"
 buildCommand = "pip install -r requirements.txt"
 
-[deploy]
+[
+deploy
+]
 startCommand = "python discord_bot1.py"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
 healthcheckPath = "/healthz"
-healthcheckTimeout = 30
-healthcheckInterval = 15
+healthcheckTimeout = 100
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 3
 
-[service]
-internal_port = 8080
+[
+envs
+]
+PYTHON_VERSION = "3.11"

@@ -17,3 +17,7 @@ discord.py>=2.0.0
 python-dotenv
 pymongo[srv]>=4.6.0
 dnspython>=2.4.0
+discord.py
+langchain-openai
+
+
