@@ -1,17 +1,18 @@
 import os
 import logging
 from dotenv import load_dotenv
-from pymongo import MongoClient, ReadPreference
+from pymongo import MongoClient, WriteConcern
+from pymongo.read_preferences import ReadPreference
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 import discord
 from discord.ext import commands
 import certifi
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 
-# Enhanced logging with MongoDB topology logging
+# Enhanced logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # Changed to INFO to reduce noise
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 logger = logging.getLogger('discord_bot')
@@ -28,49 +29,50 @@ class DatabaseManager:
         self.db = None
         self.connected = False
         self.last_heartbeat = datetime.utcnow()
+        self.next_health_check = datetime.utcnow()
+        self.health_check_interval = timedelta(seconds=60)  # Increased to 60 seconds
         self.init_connection()
 
     def init_connection(self):
-        """Initialize MongoDB connection with optimized settings for high latency"""
+        """Initialize MongoDB connection with optimized settings"""
         try:
-            logger.info("Initializing MongoDB connection with optimized settings...")
+            logger.info("Initializing MongoDB connection...")
             
-            # Connection options optimized for high latency
+            # Optimized connection settings
             connection_options = {
-                'serverSelectionTimeoutMS': 15000,      # Reduced from 30000
-                'connectTimeoutMS': 15000,              # Reduced from 20000
-                'socketTimeoutMS': 15000,               # Reduced from 20000
-                'maxPoolSize': 5,                       # Reduced pool size
+                'serverSelectionTimeoutMS': 5000,     # Reduced timeout
+                'connectTimeoutMS': 5000,
+                'socketTimeoutMS': 5000,
+                'maxPoolSize': 3,                     # Reduced pool size
                 'minPoolSize': 1,
-                'maxIdleTimeMS': 120000,               # 2 minutes idle time
-                'heartbeatFrequencyMS': 15000,         # Increased heartbeat frequency
+                'maxIdleTimeMS': 300000,             # 5 minutes idle time
+                'heartbeatFrequencyMS': 30000,       # 30 seconds heartbeat
                 'retryWrites': True,
-                'retryReads': True,
-                'waitQueueTimeoutMS': 10000,
-                'localThresholdMS': 15000,             # Increased local threshold
+                'w': 'majority',                     # Write concern
+                'readPreference': 'primaryPreferred', # Read preference
                 'tls': True,
                 'tlsCAFile': certifi.where(),
-                'directConnection': False,
-                'compressors': ['zlib'],               # Enable compression
-                'zlibCompressionLevel': 6              # Moderate compression level
+                'compressors': ['zlib'],
+                'zlibCompressionLevel': 6,
+                'appname': 'DiscordBot-Railway'      # For monitoring
             }
             
-            # Initialize client with optimized settings
             self.client = MongoClient(MONGODB_URI, **connection_options)
             
-            # Test connection and initialize database with shorter timeout
-            self.client.admin.command('ping', serverSelectionTimeoutMS=5000)
-            self.db = self.client[DB_NAME]
+            # Quick connection test
+            self.client.admin.command('ping')
             
-            # Cache collections reference
-            self.qa_collection = self.db.qa_history
+            self.db = self.client[DB_NAME]
+            self.qa_collection = self.db.get_collection(
+                'qa_history',
+                write_concern=WriteConcern(w='majority', wtimeout=5000)
+            )
             
             self.connected = True
-            logger.info("✅ MongoDB connection initialized successfully")
+            self.last_heartbeat = datetime.utcnow()
+            self.next_health_check = datetime.utcnow() + self.health_check_interval
             
-            # Log connection info
-            server_info = self.client.server_info()
-            logger.info(f"Connected to MongoDB version: {server_info.get('version', 'unknown')}")
+            logger.info("✅ MongoDB connection initialized successfully")
             
         except Exception as e:
             logger.error(f"Failed to initialize MongoDB connection: {str(e)}")
@@ -78,48 +80,34 @@ class DatabaseManager:
             raise
 
     async def ensure_connection(self):
-        """Ensure database connection is active with retry logic"""
-        max_retries = 3
-        retry_delay = 2
+        """Check connection only if needed"""
+        now = datetime.utcnow()
         
-        for attempt in range(max_retries):
+        # Only check if it's time or if not connected
+        if not self.connected or now >= self.next_health_check:
             try:
-                if not self.connected:
-                    self.init_connection()
-                else:
-                    # Quick ping with timeout
-                    self.client.admin.command('ping', serverSelectionTimeoutMS=5000)
-                    self.last_heartbeat = datetime.utcnow()
-                return
+                # Quick ping test
+                self.client.admin.command('ping', serverSelectionTimeoutMS=2000)
+                self.connected = True
+                self.last_heartbeat = now
+                self.next_health_check = now + self.health_check_interval
+                logger.debug("Connection verified")
             except Exception as e:
-                logger.warning(f"Connection check failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
-                else:
-                    self.connected = False
-                    raise
+                logger.warning(f"Connection check failed: {str(e)}")
+                self.connected = False
+                self.init_connection()
 
     async def test_connection(self):
-        """Test database connection with quick operations"""
+        """Lightweight connection test"""
         try:
             await self.ensure_connection()
-            
-            # Quick operations with timeout
-            collections = self.db.list_collection_names(
-                serverSelectionTimeoutMS=5000
-            )
-            
-            # Simple ping instead of write operation
-            self.client.admin.command('ping')
-            
             return True, {
                 'status': 'Connected',
                 'database': DB_NAME,
-                'collections': collections,
-                'last_heartbeat': self.last_heartbeat
+                'last_heartbeat': self.last_heartbeat,
+                'next_check': self.next_health_check
             }
         except Exception as e:
-            logger.error(f"Connection test failed: {str(e)}")
             return False, str(e)
 
 class QABot(commands.Bot):
@@ -128,28 +116,26 @@ class QABot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
         self.db = DatabaseManager()
-        self.health_check_interval = 30  # seconds
 
     async def setup_hook(self):
         try:
             await self.tree.sync()
-            logger.info("Bot commands synced!")
-            # Start health monitor with configured interval
-            self.loop.create_task(self.monitor_connection())
+            # Start minimal monitoring
+            self.loop.create_task(self.minimal_health_monitor())
+            logger.info("Bot setup complete!")
         except Exception as e:
-            logger.error(f"Failed to sync commands: {str(e)}")
+            logger.error(f"Setup failed: {str(e)}")
             raise
 
-    async def monitor_connection(self):
-        """Monitor database connection health"""
+    async def minimal_health_monitor(self):
+        """Minimal health monitoring"""
         while True:
             try:
                 await self.db.ensure_connection()
-                logger.debug("Connection health check passed")
-                await asyncio.sleep(self.health_check_interval)
+                await asyncio.sleep(60)  # Check every minute
             except Exception as e:
-                logger.error(f"Connection monitor error: {str(e)}")
-                await asyncio.sleep(5)
+                logger.error(f"Health monitor error: {str(e)}")
+                await asyncio.sleep(10)
 
 bot = QABot()
 
@@ -168,9 +154,8 @@ async def ping(interaction: discord.Interaction):
             await interaction.followup.send(
                 f"✅ Bot and database are working!\n"
                 f"Connected to: {interaction.guild.name}\n"
-                f"Database: {result['database']}\n"
-                f"Collections: {', '.join(result['collections'])}\n"
-                f"Last Heartbeat: {result['last_heartbeat'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                f"Last Heartbeat: {result['last_heartbeat'].strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"Next Check: {result['next_check'].strftime('%Y-%m-%d %H:%M:%S UTC')}"
             )
         else:
             await interaction.followup.send(f"⚠️ Bot is working but database connection failed: {result}")
