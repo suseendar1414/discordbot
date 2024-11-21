@@ -264,6 +264,128 @@ async def ask(interaction: discord.Interaction, question: str):
         logger.error(error_msg)
         await interaction.followup.send(error_msg)
 
+@bot.tree.command(name="debug", description="Debug database and bot status")
+async def debug(interaction: discord.Interaction):
+    """Command to check database status and content"""
+    try:
+        await interaction.response.defer()
+        
+        debug_info = "🔧 Debug Information:\n\n"
+        
+        # 1. Check MongoDB Connection
+        try:
+            mongo_client.admin.command('ping')
+            debug_info += "📡 MongoDB Connection: ✅ Connected\n"
+        except Exception as e:
+            debug_info += f"📡 MongoDB Connection: ❌ Error: {str(e)}\n"
+        
+        # 2. Document Collections Stats
+        try:
+            # Check documents collection
+            docs_count = docs_collection.count_documents({})
+            debug_info += f"\n📚 Documents Collection:\n"
+            debug_info += f"Total documents: {docs_count}\n"
+            
+            # Sample document structure
+            sample_doc = docs_collection.find_one()
+            if sample_doc:
+                debug_info += "Document structure:\n"
+                debug_info += f"Fields: {', '.join(sample_doc.keys())}\n"
+                # Show a preview of the text content
+                if 'text' in sample_doc:
+                    preview = sample_doc['text'][:200] + "..." if len(sample_doc['text']) > 200 else sample_doc['text']
+                    debug_info += f"Sample text preview:\n{preview}\n"
+            
+            # Check QA history collection
+            qa_count = qa_collection.count_documents({})
+            debug_info += f"\n💬 QA History Collection:\n"
+            debug_info += f"Total QA pairs: {qa_count}\n"
+            
+            # Recent questions
+            recent_questions = list(qa_collection.find().sort('timestamp', -1).limit(3))
+            if recent_questions:
+                debug_info += "\nRecent questions:\n"
+                for qa in recent_questions:
+                    status = "✅" if qa.get('success', False) else "❌"
+                    debug_info += f"{status} {qa.get('question', 'N/A')}\n"
+            
+        except Exception as e:
+            debug_info += f"\nCollection Stats Error: {str(e)}\n"
+        
+        await interaction.followup.send(debug_info)
+        
+    except Exception as e:
+        logger.error(f"Debug command error: {str(e)}")
+        await interaction.followup.send(f"Error during debug: {str(e)}")
+
+@bot.tree.command(name="debug_search", description="Test search functionality")
+@app_commands.describe(query="Test query to search for")
+async def debug_search(interaction: discord.Interaction, query: str = None):
+    """Command to test search functionality"""
+    try:
+        await interaction.response.defer()
+        
+        debug_info = "🔍 Search Debug Results:\n\n"
+        
+        # If no query provided, use a test query
+        if not query:
+            query = "trading basics"
+            debug_info += f"Using test query: '{query}'\n\n"
+        else:
+            debug_info += f"Query: '{query}'\n\n"
+        
+        # 1. Collection Status
+        docs_count = docs_collection.count_documents({})
+        debug_info += f"📚 Total documents in database: {docs_count}\n"
+        
+        # 2. Perform Search
+        try:
+            # Generate search terms for visibility
+            search_terms = [
+                query.lower(),
+                *query.lower().split(),
+                *(f"{a} {b}" for a, b in zip(query.lower().split(), query.lower().split()[1:]))
+            ]
+            debug_info += f"\n🔤 Search terms generated:\n{', '.join(search_terms)}\n"
+            
+            # Execute search
+            results = search_similar_chunks(query)
+            debug_info += f"\n🎯 Results found: {len(results)}\n"
+            
+            # Show results preview
+            if results:
+                debug_info += "\n📑 Result previews:\n"
+                for i, result in enumerate(results[:2], 1):
+                    preview = result[:200] + "..." if len(result) > 200 else result
+                    debug_info += f"\nResult {i}:\n{preview}\n"
+            else:
+                debug_info += "\n❌ No results found\n"
+                
+                # Show a sample document for debugging
+                sample = docs_collection.find_one()
+                if sample:
+                    debug_info += "\n📄 Sample document from database:\n"
+                    if 'text' in sample:
+                        preview = sample['text'][:200] + "..." if len(sample['text']) > 200 else sample['text']
+                        debug_info += f"Text preview: {preview}\n"
+                    debug_info += f"Available fields: {', '.join(sample.keys())}\n"
+                    
+        except Exception as e:
+            debug_info += f"\n⚠️ Search error: {str(e)}\n"
+        
+        # Split response if too long
+        if len(debug_info) > 1990:
+            parts = [debug_info[i:i+1990] for i in range(0, len(debug_info), 1990)]
+            await interaction.followup.send(parts[0])
+            for part in parts[1:]:
+                await interaction.followup.send(part)
+        else:
+            await interaction.followup.send(debug_info)
+            
+    except Exception as e:
+        logger.error(f"Debug search error: {str(e)}")
+        await interaction.followup.send(f"Error during debug: {str(e)}")
+
 @bot.tree.command(name="stats", description="Get Q&A statistics for this server")
 async def stats(interaction: discord.Interaction):
     try:
