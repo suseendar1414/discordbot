@@ -8,9 +8,7 @@ from discord.ext import commands
 import certifi
 from datetime import datetime
 import asyncio
-import aiohttp
 from aiohttp import web
-import threading
 
 # Enhanced logging
 logging.basicConfig(
@@ -57,11 +55,12 @@ class DatabaseManager:
             self.connected = True
             self.last_heartbeat = datetime.utcnow()
             logger.info("✅ MongoDB connection initialized successfully")
+            return True
             
         except Exception as e:
             logger.error(f"Failed to initialize MongoDB connection: {str(e)}")
             self.connected = False
-            raise
+            return False
 
     async def test_connection(self):
         """Test database connection"""
@@ -81,6 +80,7 @@ class QABot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
         self.db = DatabaseManager()
+        self.is_fully_ready = False
 
     async def setup_hook(self):
         try:
@@ -90,22 +90,48 @@ class QABot(commands.Bot):
             logger.error(f"Setup failed: {str(e)}")
             raise
 
+    async def on_ready(self):
+        self.is_fully_ready = True
+        logger.info(f'Bot is ready! Logged in as {self.user}')
+        for guild in bot.guilds:
+            logger.info(f'Connected to guild: {guild.name} (id: {guild.id})')
+
 # Create the bot instance
 bot = QABot()
 
 # Health check web server
 async def health_check(request):
+    """Enhanced health check with startup grace period"""
     try:
-        # Check Discord connection
-        if not bot.is_ready():
-            return web.Response(text="Discord bot not ready", status=503)
+        # Give the bot time to fully start up
+        startup_grace_period = 10  # seconds
+        for _ in range(startup_grace_period):
+            if bot.is_fully_ready:
+                break
+            await asyncio.sleep(1)
+        
+        status = {
+            "discord": bot.is_fully_ready,
+            "database": False,
+            "timestamp": datetime.utcnow().isoformat()
+        }
         
         # Check MongoDB connection
         success, _ = await bot.db.test_connection()
-        if not success:
-            return web.Response(text="Database not connected", status=503)
+        status["database"] = success
         
-        return web.Response(text="OK", status=200)
+        # Return 200 only if both services are ready
+        if status["discord"] and status["database"]:
+            return web.Response(
+                text=f"Healthy: Discord={status['discord']}, DB={status['database']}, Time={status['timestamp']}", 
+                status=200
+            )
+        else:
+            return web.Response(
+                text=f"Starting up: Discord={status['discord']}, DB={status['database']}, Time={status['timestamp']}", 
+                status=503
+            )
+            
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return web.Response(text=str(e), status=503)
@@ -114,12 +140,6 @@ async def health_check(request):
 app = web.Application()
 app.router.add_get('/', health_check)
 app.router.add_get('/healthz', health_check)
-
-@bot.event
-async def on_ready():
-    logger.info(f'Bot is ready! Logged in as {bot.user}')
-    for guild in bot.guilds:
-        logger.info(f'Connected to guild: {guild.name} (id: {guild.id})')
 
 @bot.tree.command(name="ping", description="Test if the bot is working")
 async def ping(interaction: discord.Interaction):
