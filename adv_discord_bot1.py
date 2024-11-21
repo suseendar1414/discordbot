@@ -53,35 +53,128 @@ class QABot(commands.Bot):
 
 bot = QABot()
 
-def search_similar_chunks(query, k=3):
+def search_similar_chunks(self, query, k=3):
     """Search for similar chunks using vector similarity"""
     try:
-        # Simple text search first
-        text_query = {"text": {"$regex": f"(?i){query}"}}
-        results = list(docs_collection.find(text_query).limit(k))
+        # Log the search attempt
+        logger.info(f"Starting search for query: {query}")
+        
+        # First try exact text search
+        logger.info("Attempting exact text search...")
+        text_query = {"$text": {"$search": query}}
+        results = list(self.docs_collection.find(text_query).limit(k))
         
         if not results:
-            # Try vector search
-            query_embedding = embeddings_model.embed_query(query)
-            pipeline = [
-                {
-                    '$search': {
-                        'index': 'vector_index',
-                        'knnBeta': {
-                            'vector': query_embedding,
-                            'path': 'embedding',
-                            'k': k
+            logger.info("No exact matches, trying regex search...")
+            # Try regex search if exact search fails
+            regex_query = {"text": {"$regex": f"(?i){query}"}}
+            results = list(self.docs_collection.find(regex_query).limit(k))
+        
+        if not results:
+            logger.info("No regex matches, attempting vector search...")
+            try:
+                # Generate query embedding
+                query_embedding = embeddings_model.embed_query(query)
+                
+                # Check if vector index exists
+                indexes = self.db.list_indexes()
+                has_vector_index = any('vector_index' in idx.get('name', '') for idx in indexes)
+                
+                if not has_vector_index:
+                    logger.warning("Vector index not found, falling back to basic search")
+                    # Fallback to basic keyword search
+                    basic_query = {"text": {"$regex": f".*{query}.*", "$options": "i"}}
+                    results = list(self.docs_collection.find(basic_query).limit(k))
+                else:
+                    # Use vector search
+                    pipeline = [
+                        {
+                            '$search': {
+                                'index': 'vector_index',
+                                'knnBeta': {
+                                    'vector': query_embedding,
+                                    'path': 'embedding',
+                                    'k': k
+                                }
+                            }
                         }
-                    }
-                }
-            ]
-            results = list(docs_collection.aggregate(pipeline))
+                    ]
+                    results = list(self.docs_collection.aggregate(pipeline))
+            except Exception as ve:
+                logger.error(f"Vector search failed: {ve}")
+                # Fallback to basic search
+                basic_query = {"text": {"$regex": f".*{query}.*", "$options": "i"}}
+                results = list(self.docs_collection.find(basic_query).limit(k))
+        
+        # Log search results
+        num_results = len(results)
+        logger.info(f"Found {num_results} results")
+        
+        if num_results > 0:
+            # Log a sample of what was found (first result)
+            first_result = results[0].get('text', '')[:100]  # First 100 chars
+            logger.info(f"Sample result: {first_result}...")
+        else:
+            logger.warning("No results found in any search method")
+            
+            # Debug: Log collection stats
+            count = self.docs_collection.count_documents({})
+            logger.info(f"Total documents in collection: {count}")
+            
+            # Sample a random document to verify data
+            sample_doc = self.docs_collection.find_one()
+            if sample_doc:
+                logger.info("Sample document structure:")
+                logger.info(f"Keys present: {list(sample_doc.keys())}")
+            else:
+                logger.warning("No documents found in collection")
         
         return [doc['text'] for doc in results]
+        
     except Exception as e:
         logger.error(f"Search error: {e}")
+        logger.error(f"Search error details:", exc_info=True)
         return []
 
+@bot.tree.command(name="debug_db", description="Debug database content")
+async def debug_db(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer()
+        
+        # Get collection stats
+        doc_count = bot.db.docs_collection.count_documents({})
+        
+        # Sample a document
+        sample_doc = bot.db.docs_collection.find_one()
+        
+        # Check indexes
+        indexes = list(bot.db.docs_collection.list_indexes())
+        index_names = [index.get('name') for index in indexes]
+        
+        response = (
+            f"📊 Database Debug Info:\n"
+            f"Total documents: {doc_count}\n"
+            f"Indexes: {', '.join(index_names)}\n\n"
+        )
+        
+        if sample_doc:
+            response += (
+                f"📄 Sample document structure:\n"
+                f"Fields: {', '.join(sample_doc.keys())}\n"
+                f"Text preview: {sample_doc.get('text', 'N/A')[:100]}...\n"
+            )
+        else:
+            response += "❌ No documents found in collection"
+        
+        await interaction.followup.send(response)
+        
+    except Exception as e:
+        logger.error(f"Debug command error: {e}")
+        await interaction.followup.send(
+            "An error occurred while debugging the database",
+            ephemeral=True
+        )
+        
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
