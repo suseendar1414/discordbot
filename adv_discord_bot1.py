@@ -42,14 +42,27 @@ intents.message_content = True
 
 class QABot(commands.Bot):
     def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
-
+        
     async def setup_hook(self):
         try:
-            await self.tree.sync()
-            logger.info("Commands synced!")
+            await self.tree.sync()  # Syncs commands globally
+            logger.info("✅ Commands synced globally!")
+            
+            # Verify sync by listing registered commands
+            commands = await self.tree.fetch_commands()
+            logger.info(f"Registered commands: {[cmd.name for cmd in commands]}")
         except Exception as e:
-            logger.error(f"Failed to sync commands: {e}")
+            logger.error(f"❌ Command sync failed: {str(e)}")
+            raise
+
+    async def on_ready(self):
+        logger.info(f'Bot is ready! Logged in as {bot.user}')
+        logger.info(f'Connected to {len(bot.guilds)} servers:')
+        for guild in bot.guilds:
+            logger.info(f'- {guild.name} (id: {guild.id})')
 
 bot = QABot()
 
@@ -352,7 +365,7 @@ Searching..."""
     except Exception as e:
         logger.error(f"Debug search error: {str(e)}")
         await interaction.followup.send(f"Error during debug: {str(e)}")
-        
+
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f"Command error: {error}")
