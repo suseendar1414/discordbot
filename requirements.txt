@@ -12,3 +12,8 @@ aiohttp>=3.9.1
 certifi==2024.8.30
 pymongo[srv]
 dnspython
+discord.py>=2.0.0
+python-dotenv
+pymongo[srv,zlib]>=4.6.0
+dnspython>=2.4.0
+certifi>=2023.7.22
