@@ -21,3 +21,10 @@ discord.py
 langchain-openai
 
 
+
+
+
+
+
+
+
